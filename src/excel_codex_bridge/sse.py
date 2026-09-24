@@ -80,19 +80,30 @@ def parse_sse_block(raw_block: str) -> tuple[str | None, str | None]:
 async def iter_sse_messages(byte_iter):
     buffer = ""
     decoder = codecs.getincrementaldecoder("utf-8")()
-    async for chunk in byte_iter:
-        if isinstance(chunk, bytes):
-            buffer += decoder.decode(chunk)
-        else:
-            buffer += str(chunk)
+    try:
+        async for chunk in byte_iter:
+            if isinstance(chunk, bytes):
+                buffer += decoder.decode(chunk)
+            else:
+                buffer += str(chunk)
 
-        normalized = buffer.replace("\r\n", "\n")
-        while "\n\n" in normalized:
-            raw_block, normalized = normalized.split("\n\n", 1)
-            event_name, data = parse_sse_block(raw_block)
+            normalized = buffer.replace("\r\n", "\n")
+            while "\n\n" in normalized:
+                raw_block, normalized = normalized.split("\n\n", 1)
+                event_name, data = parse_sse_block(raw_block)
+                if data is not None:
+                    yield event_name, data
+            buffer = normalized
+    except Exception:
+        # The connection can break right after the last event, before the
+        # blank line that ends it; that event is still whole. (A cut-off one
+        # fails to parse as JSON and is dropped by the reader.)
+        trailing = buffer.strip()
+        if trailing:
+            event_name, data = parse_sse_block(trailing)
             if data is not None:
                 yield event_name, data
-        buffer = normalized
+        raise
 
     buffer += decoder.decode(b"", final=True)
 
