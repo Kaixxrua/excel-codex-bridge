@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -21,12 +22,21 @@ from pathlib import Path
 from typing import Callable
 from xml.sax.saxutils import escape
 
+import httpx
+
 from . import codex_config
 from .session import EXPIRY_MARGIN_SECONDS, SessionReader
 
 logger = logging.getLogger(__name__)
 
 CHATGPT_ADDIN_ASSET_ID = "WA200010215"
+# Excel installs exactly the add-in version a workbook names, and a version
+# the store no longer serves fails with "Error loading add-ins", so the
+# current one is looked up in the public AppSource catalog; this is the
+# fallback when the catalog cannot be reached.
+CHATGPT_ADDIN_VERSION = "2.0.0.1"
+_CATALOG_URL = f"https://catalogapi.azure.com/offers/{CHATGPT_ADDIN_ASSET_ID}"
+_VERSION = re.compile(r"\d+(?:\.\d+){3}")
 WORKBOOK_NAME = "excel-codex-sign-in.xlsx"
 # EXCEL_BRIDGE_AUTO_SIGNIN=0 turns the whole feature off.
 ENV_SWITCH = "EXCEL_BRIDGE_AUTO_SIGNIN"
@@ -50,6 +60,23 @@ _NOTES = (
 
 # ─── helper workbook ──────────────────────────────────────────────────────────
 
+def current_addin_version(*, timeout: float = 10.0) -> str:
+    """The add-in's version in the AppSource catalog, else the pinned one."""
+    try:
+        response = httpx.get(
+            _CATALOG_URL, params={"api-version": "2018-08-01-beta", "market": "US"}, timeout=timeout
+        )
+        response.raise_for_status()
+        version = response.json().get("offerVersion")
+    except (httpx.HTTPError, ValueError, AttributeError) as exc:
+        logger.info("AppSource catalog unavailable (%s); using add-in version %s", exc, CHATGPT_ADDIN_VERSION)
+        return CHATGPT_ADDIN_VERSION
+    if not isinstance(version, str) or not _VERSION.fullmatch(version):
+        logger.info("AppSource catalog gave no add-in version; using %s", CHATGPT_ADDIN_VERSION)
+        return CHATGPT_ADDIN_VERSION
+    return version
+
+
 _R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 _REL = "http://schemas.openxmlformats.org/package/2006/relationships"
 _MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -63,12 +90,13 @@ def _cells() -> str:
     )
 
 
-def workbook_parts() -> dict[str, str]:
+def workbook_parts(version: str = CHATGPT_ADDIN_VERSION) -> dict[str, str]:
     """The OOXML parts of a one-sheet workbook with the ChatGPT pane embedded.
 
     The ``webextension`` + ``taskpanes`` parts follow Microsoft's
     Office-OOXML-EmbedAddin sample: ``visibility="1"`` opens the pane when the
-    workbook opens (asking to trust the add-in the first time).
+    workbook opens (asking to trust the add-in the first time).  ``version``
+    must be the add-in's current AppSource version.
     """
     return {
         "[Content_Types].xml": _XML
@@ -127,7 +155,7 @@ def workbook_parts() -> dict[str, str]:
         "xl/webextensions/webextension1.xml": _XML
         + '<we:webextension xmlns:we="http://schemas.microsoft.com/office/webextensions/webextension/2010/11" '
         'id="{6F2B4F3A-1C84-4E36-9D0B-5A7C2E9B41D7}">'
-        f'<we:reference id="{CHATGPT_ADDIN_ASSET_ID}" version="1.0.0.0" store="en-US" storeType="OMEX"/>'
+        f'<we:reference id="{CHATGPT_ADDIN_ASSET_ID}" version="{escape(version)}" store="en-US" storeType="OMEX"/>'
         "<we:alternateReferences/>"
         '<we:properties><we:property name="Office.AutoShowTaskpaneWithDocument" value="true"/></we:properties>'
         "<we:bindings/>"
@@ -136,13 +164,13 @@ def workbook_parts() -> dict[str, str]:
     }
 
 
-def write_workbook(directory: Path) -> Path:
+def write_workbook(directory: Path, version: str = CHATGPT_ADDIN_VERSION) -> Path:
     """Write the helper workbook, leaving an identical (maybe open) copy alone."""
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / WORKBOOK_NAME
     tmp = directory / f".{WORKBOOK_NAME}.tmp"
     with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as archive:
-        for name, content in workbook_parts().items():
+        for name, content in workbook_parts(version).items():
             info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
             archive.writestr(info, content.encode("utf-8"))
@@ -254,6 +282,7 @@ class ExcelSignIn:
         opener: Callable[..., None] | None = None,
         closer: Callable[..., bool] | None = None,
         excel_running: Callable[[], bool] | None = None,
+        addin_version: Callable[[], str] = current_addin_version,
         poll_seconds: float = 2.0,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
@@ -264,6 +293,7 @@ class ExcelSignIn:
         self._open = opener or _open_in_excel
         self._close = closer or _close_in_excel
         self._excel_running = excel_running or _excel_running
+        self._addin_version = addin_version
         self.poll_seconds = poll_seconds
         self._sleep = sleep
         self.clock = clock
@@ -278,7 +308,7 @@ class ExcelSignIn:
         """
         with self._lock:
             was_running = self._excel_running()
-            path = write_workbook(self.workbook_dir or codex_config.state_dir())
+            path = write_workbook(self.workbook_dir or codex_config.state_dir(), self._addin_version())
             self._open(path, minimized=not interactive)
             try:
                 deadline = self.clock() + timeout

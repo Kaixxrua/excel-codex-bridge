@@ -10,12 +10,19 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
+import httpx
+
 from excel_codex_bridge import cli, excel_signin
 
 WE = "{http://schemas.microsoft.com/office/webextensions/webextension/2010/11}"
 WETP = "{http://schemas.microsoft.com/office/webextensions/taskpanes/2010/11}"
 REL = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 CT = "{http://schemas.openxmlformats.org/package/2006/content-types}"
+
+
+def reference(path: Path) -> ET.Element:
+    with zipfile.ZipFile(path) as archive:
+        return ET.fromstring(archive.read("xl/webextensions/webextension1.xml")).find(f"{WE}reference")
 
 
 def status(expires_in: float | None, *, configured: bool = True) -> dict:
@@ -54,6 +61,7 @@ class FakeExcel:
             opener=lambda path, *, minimized: self.opened.append((path, minimized)),
             closer=lambda path, *, quit_excel: self.closed.append((path, quit_excel)) or True,
             excel_running=lambda: self.running,
+            addin_version=lambda: "2.3.4.5",
             sleep=lambda _: None,
             clock=lambda: next(clock),
             **kwargs,
@@ -78,11 +86,16 @@ class WorkbookTests(unittest.TestCase):
 
         reference = parts["xl/webextensions/webextension1.xml"].find(f"{WE}reference")
         self.assertEqual(reference.get("id"), "WA200010215")
+        self.assertEqual(reference.get("version"), excel_signin.CHATGPT_ADDIN_VERSION)
         self.assertEqual(reference.get("storeType"), "OMEX")
         prop = parts["xl/webextensions/webextension1.xml"].find(f"{WE}properties/{WE}property")
         self.assertEqual((prop.get("name"), prop.get("value")), ("Office.AutoShowTaskpaneWithDocument", "true"))
         pane = parts["xl/webextensions/taskpanes.xml"].find(f"{WETP}taskpane")
         self.assertEqual(pane.get("visibility"), "1")
+
+    def test_workbook_names_the_given_addin_version(self):
+        path = excel_signin.write_workbook(Path(tempfile.mkdtemp()), "3.1.0.7")
+        self.assertEqual(reference(path).get("version"), "3.1.0.7")
 
     def test_rewriting_an_identical_workbook_leaves_it_alone(self):
         directory = Path(tempfile.mkdtemp())
@@ -94,6 +107,34 @@ class WorkbookTests(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in directory.iterdir()), [excel_signin.WORKBOOK_NAME])
 
 
+class AddinVersionTests(unittest.TestCase):
+    def lookup(self, response: httpx.Response | Exception) -> str:
+        def get(url, **kwargs):
+            if isinstance(response, Exception):
+                raise response
+            response.request = httpx.Request("GET", url, params=kwargs.get("params"))
+            return response
+
+        with mock.patch.object(excel_signin.httpx, "get", side_effect=get):
+            return excel_signin.current_addin_version()
+
+    def test_uses_the_version_appsource_lists(self):
+        self.assertEqual(self.lookup(httpx.Response(200, json={"offerVersion": "2.0.1.0"})), "2.0.1.0")
+
+    def test_falls_back_to_the_pinned_version(self):
+        pinned = excel_signin.CHATGPT_ADDIN_VERSION
+        for response in (
+            httpx.ConnectError("offline"),
+            httpx.Response(503),
+            httpx.Response(200, content=b"<html>"),
+            httpx.Response(200, json=["2.0.1.0"]),
+            httpx.Response(200, json={"offerVersion": "2.0"}),
+            httpx.Response(200, json={"offerVersion": '1.0.0.0" evil="1'}),
+        ):
+            with self.subTest(response=response):
+                self.assertEqual(self.lookup(response), pinned)
+
+
 class SignInTests(unittest.TestCase):
     def test_signing_in_shows_excel_and_closes_it_again(self):
         excel = FakeExcel(running=False)
@@ -102,6 +143,7 @@ class SignInTests(unittest.TestCase):
         result = excel.signin(reader).run(interactive=True, timeout=60)
         self.assertIs(result, fresh)
         self.assertEqual([minimized for _, minimized in excel.opened], [False])
+        self.assertEqual(reference(excel.opened[0][0]).get("version"), "2.3.4.5")
         # The bridge started Excel, so it may quit it once the workbook is closed.
         self.assertEqual(excel.closed, [(excel.opened[0][0], True)])
 
