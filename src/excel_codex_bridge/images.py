@@ -2,10 +2,12 @@
 
 Codex sends pictures inline, as ``data:`` URLs; the Excel backend rejects
 those and only takes links that OpenAI can fetch.  The bridge swaps each
-picture for such a link, in one of three modes (``excel-codex image-host``):
+picture for such a link, in one of four modes (``excel-codex image-host``):
 
 - ``local`` (default): the picture stays in this process's memory and is
   served through a temporary Cloudflare link (see ``local_host``);
+- ``relay``: it is uploaded to this project's public relay, for networks that
+  cannot reach Cloudflare (opt-in; deleted an hour after its last use);
 - ``remote``: it is uploaded to an image host you run (see ``image_host``);
 - ``off``: the catalog tells Codex the models take text only.
 """
@@ -32,8 +34,13 @@ log = logging.getLogger("excel_codex_bridge.images")
 
 ENV_HOST = "EXCEL_BRIDGE_IMAGE_HOST"
 ENV_TOKEN = "EXCEL_BRIDGE_IMAGE_TOKEN"
+ENV_RELAY = "EXCEL_BRIDGE_RELAY_URL"
 CONFIG_NAME = "image-host.json"
-LOCAL, REMOTE, OFF = "local", "remote", "off"
+LOCAL, RELAY, REMOTE, OFF = "local", "relay", "remote", "off"
+# The public relay run by this project's author: an image_host with
+# IMAGE_HOST_OPEN=1, a one-hour lifetime, and pictures served only to OpenAI.
+RELAY_URL = "https://img.aigcnews.cn"
+RELAY_HINT = "`excel-codex image-host relay` sends pictures through this project's relay instead"
 DEFAULT_EXPIRES_IN = 24 * 3600
 CACHE_SIZE = 256
 
@@ -64,11 +71,17 @@ def clean_url(url: str) -> str:
     return url
 
 
+def relay_setting(source: str = "default") -> Setting:
+    return Setting(RELAY, clean_url(os.environ.get(ENV_RELAY, "").strip() or RELAY_URL), source=source)
+
+
 def _parse(value: str, token: str, source: str) -> Setting:
     if value.lower() in {OFF, "0", "none", "false"}:
         return Setting(OFF, source=source)
     if value.lower() == LOCAL:
         return Setting(LOCAL, source=source)
+    if value.lower() == RELAY:
+        return relay_setting(source)
     return Setting(REMOTE, clean_url(value), token.strip(), source=source)
 
 
@@ -87,6 +100,8 @@ def load_setting(directory: Path | None = None) -> Setting:
     mode = data.get("mode")
     if mode in {LOCAL, OFF}:
         return Setting(mode, source=str(path))
+    if mode == RELAY:
+        return relay_setting(str(path))
     if isinstance(data.get("url"), str) and data["url"].strip():
         return Setting(REMOTE, clean_url(data["url"]), token.strip(), source=str(path))
     return DEFAULT_SETTING
@@ -113,7 +128,7 @@ def cloudflared_path(directory: Path | None = None) -> str | None:
 def pictures_available(setting: Setting, directory: Path | None = None) -> bool:
     if setting.mode == LOCAL:
         return cloudflared_path(directory) is not None
-    return setting.mode == REMOTE
+    return setting.mode in {RELAY, REMOTE}
 
 
 def check(setting: Setting, client: httpx.Client | None = None) -> tuple[bool, str]:
@@ -129,7 +144,7 @@ def check(setting: Setting, client: httpx.Client | None = None) -> tuple[bool, s
         if own:
             client.close()
     if response.status_code == 415:
-        return True, f"{setting.url} is up and accepts the token."
+        return True, f"{setting.url} is up and accepts the token." if setting.token else f"{setting.url} is up."
     if response.status_code == 401:
         return False, f"{setting.url} rejected the token."
     return False, f"{setting.upload_url} answered HTTP {response.status_code}; is this an excel-codex image host?"
@@ -235,6 +250,9 @@ class RemoteHost:
 class LocalHost:
     """Pictures served from this computer (``local_host``)."""
 
+    # When Cloudflare cannot be reached from here, the model is told (and so the user).
+    hint = RELAY_HINT
+
     def __init__(self, pictures: local_host.LocalPictures) -> None:
         self.pictures = pictures
 
@@ -248,7 +266,7 @@ class LocalHost:
         try:
             return await asyncio.to_thread(self.pictures.link, data)
         except ConnectionError as exc:
-            raise HostUnavailable(str(exc)) from exc
+            raise HostUnavailable(f"{exc}; {self.hint}") from exc
         except ValueError as exc:
             raise UploadError(str(exc)) from exc
 
@@ -299,7 +317,8 @@ class ImageUploader:
         if self.host is None:
             return _omitted(self.off_reason)
         if not state.links:
-            return _omitted(FETCH_FAILED)
+            hint = getattr(self.host, "hint", "")
+            return _omitted(f"{FETCH_FAILED}; {hint}" if hint else FETCH_FAILED)
         if state.down is not None:
             return _omitted(state.down)
         decoded = _decode_data_url(data_url)
@@ -328,7 +347,7 @@ class _Rewrite:
 def build_uploader(setting: Setting | None = None, directory: Path | None = None) -> ImageUploader:
     directory = directory or codex_config.state_dir()
     setting = setting or load_setting(directory)
-    if setting.mode == REMOTE:
+    if setting.mode in {RELAY, REMOTE}:
         return ImageUploader(RemoteHost(setting))
     if setting.mode == LOCAL:
         binary = cloudflared_path(directory)
@@ -340,6 +359,9 @@ def build_uploader(setting: Setting | None = None, directory: Path | None = None
 
 def describe(setting: Setting, directory: Path | None = None) -> str:
     """One line for the bridge window."""
+    if setting.mode == RELAY:
+        return (f"Pictures: sent through this project's relay ({setting.url}); only OpenAI can fetch them, "
+                "and each is deleted an hour after its last use.")
     if setting.mode == REMOTE:
         return f"Pictures: uploaded to {setting.url}, where they can be opened by their link for about a day."
     if setting.mode == OFF:

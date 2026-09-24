@@ -236,6 +236,16 @@ _LOCAL_HELP = """\
   tunnel, because OpenAI only takes pictures as links. Nothing is written to disk
   or uploaded anywhere else, and it all goes away when the bridge stops."""
 
+_RELAY_HELP = """\
+  For networks that cannot reach Cloudflare. OpenAI only takes pictures as links
+  it can fetch, so each picture in a request is uploaded to {url},
+  a relay run by this project's author. There it is
+  - saved afresh from its pixels, so no metadata (such as a photo's location) is kept;
+  - served only to OpenAI's fetcher, not to browsers or anyone else;
+  - deleted an hour after its last use, and not backed up or used for anything else.
+  The pictures do leave this computer: keep to the default if that matters for them.
+  `excel-codex image-host local` goes back to it."""
+
 _NO_CLOUDFLARED = """\
   cloudflared was not found, so pictures are off. The release packages include it;
   otherwise install it (Windows: winget install Cloudflare.cloudflared,
@@ -247,9 +257,18 @@ def cmd_image_host(args) -> int:
         path = images.save_setting(images.Setting(args.action))
         _print("Pictures are off; Codex sends the model text only." if args.action == "off"
                else "Pictures are passed on from this computer.")
-        if os.environ.get(images.ENV_HOST):
-            _print(f"  Note: {images.ENV_HOST} is set in this environment and takes precedence over {path}.")
-        _print("  Restart `excel-codex` (or `excel-codex desktop` and the Codex app) to apply it.")
+        _saved_note(path)
+        return 0
+    if args.action == "relay":
+        setting = images.relay_setting()
+        _print("Pictures go through this project's relay.")
+        _print(_RELAY_HELP.format(url=setting.url))
+        ok, message = images.check(setting)
+        _print(f"  {message}")
+        if not ok:
+            _print("Nothing was saved.")
+            return 1
+        _saved_note(images.save_setting(setting))
         return 0
     if args.action == "set":
         if not args.url or not args.token:
@@ -282,14 +301,27 @@ def cmd_image_host(args) -> int:
             _print(_NO_CLOUDFLARED.format(bin_dir=codex_config.state_dir() / "bin"))
             return 1
         _print(f"  cloudflared: {binary}")
-        _print("  `excel-codex image-host off` turns pictures off.")
+        _print("  If Cloudflare cannot be reached from your network, `excel-codex image-host relay`\n"
+               "  uses this project's relay instead. `excel-codex image-host off` turns pictures off.")
         return 0
+    if setting.mode == images.RELAY:
+        _print(f"Pictures: through this project's relay{source}.")
+        _print(_RELAY_HELP.format(url=setting.url))
+        ok, message = images.check(setting)
+        _print(f"  {message}")
+        return 0 if ok else 1
     _print(f"Pictures: uploaded to {setting.url}{source}.")
     ok, message = images.check(setting)
     _print(f"  {message}")
     _print("  Anyone with a picture's link can open it until it expires. "
            "`excel-codex image-host local` keeps pictures on this computer instead.")
     return 0 if ok else 1
+
+
+def _saved_note(path: Path) -> None:
+    if os.environ.get(images.ENV_HOST):
+        _print(f"  Note: {images.ENV_HOST} is set in this environment and takes precedence over {path}.")
+    _print("  Restart `excel-codex` (or `excel-codex desktop` and the Codex app) to apply it.")
 
 
 # ─── codex launcher ───────────────────────────────────────────────────────────
@@ -609,11 +641,13 @@ def _parser() -> argparse.ArgumentParser:
 
     image = sub.add_parser(
         "image-host",
-        help="how pictures reach the model: from this computer (default), your own image host, or off",
+        help="how pictures reach the model: from this computer (default), this project's relay, "
+             "your own image host, or off",
     )
     image.add_argument(
-        "action", nargs="?", choices=["show", "local", "set", "off"], default="show",
-        help="local: serve pictures from this computer (default); set: use your own image host; off: text only",
+        "action", nargs="?", choices=["show", "local", "relay", "set", "off"], default="show",
+        help="local: serve pictures from this computer (default); relay: through this project's relay, "
+             "for networks that cannot reach Cloudflare; set: use your own image host; off: text only",
     )
     image.add_argument("url", nargs="?", help="for set: the image host's address, e.g. https://img.example.com")
     image.add_argument("token", nargs="?", help="for set: your upload token for it")

@@ -19,7 +19,8 @@ config must come back byte for byte when the desktop window stops.
 only ever see it as a link, the same link every time, and fetches it from
 there the way OpenAI would.  In the default ``local`` mode the link goes
 through a stand-in for cloudflared (nothing leaves this computer); with
-``--images remote`` it goes to an image host run next to the fake backend.
+``--images remote`` it goes to an image host run next to the fake backend, and
+with ``--images relay`` to an open one that only serves OpenAI's user agent.
 """
 
 from __future__ import annotations
@@ -120,6 +121,8 @@ def image_urls(value) -> list[str]:
 
 def fetch(url: str) -> bytes | None:
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    # What OpenAI fetches pictures as; the relay serves no one else.
+    opener.addheaders = [("User-Agent", "OpenAI File Downloader")]
     try:
         with opener.open(url, timeout=10) as response:
             return response.read()
@@ -384,8 +387,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--model", default="gpt-5.6-sol-excel")
     parser.add_argument("--desktop", action="store_true", help="check `desktop` mode with a plain codex")
-    parser.add_argument("--images", nargs="?", const="local", choices=["local", "remote"],
-                        help="also attach a picture, passed on locally (default) or through an image host")
+    parser.add_argument("--images", nargs="?", const="local", choices=["local", "remote", "relay"],
+                        help="also attach a picture, passed on locally (default), through an image host, "
+                             "or through a relay (an open image host)")
     parser.add_argument("--timeout", type=int, default=900, help="seconds for each long step")
     parser.add_argument("launcher", nargs=argparse.REMAINDER)
     args = parser.parse_args()
@@ -402,7 +406,8 @@ def main() -> int:
     backend = FakeExcelBackend()
     server, port = start_server(backend.app)
 
-    env = {key: value for key, value in os.environ.items() if not key.startswith("EXCEL_BRIDGE_IMAGE_")}
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("EXCEL_BRIDGE_IMAGE_") and key != "EXCEL_BRIDGE_RELAY_URL"}
     env.update(
         CODEX_HOME=str(root / "codex-home"),
         EXCEL_BRIDGE_HOME=str(root / "bridge-home"),
@@ -423,11 +428,14 @@ def main() -> int:
         env.update(EXCEL_BRIDGE_CLOUDFLARED=str(cloudflared), E2E_CLOUDFLARED_RECORD=str(record),
                    TUNNEL_ORIGIN_CERT=str(root / "no-such-cert.pem"))
         backend.resolve = lambda url: url.replace(FAKE_TUNNEL, tunnel_origin(record) or FAKE_TUNNEL, 1)
-    elif args.images == "remote":
+    elif args.images in {"remote", "relay"}:
         backend.resolve = lambda url: url
         host_port = free_port()
+        relay = args.images == "relay"
         settings = image_host.Settings(
-            public_url=f"http://127.0.0.1:{host_port}", tokens=(IMAGE_TOKEN,), directory=root / "image-host"
+            public_url=f"http://127.0.0.1:{host_port}", tokens=() if relay else (IMAGE_TOKEN,),
+            directory=root / "image-host", open_uploads=relay, uploads_per_hour=100 if relay else 0,
+            fetchers=("OpenAI",) if relay else (),
         )
         host_server = uvicorn.Server(uvicorn.Config(
             image_host.create_app(settings), host="127.0.0.1", port=host_port, log_level="warning"
@@ -435,7 +443,10 @@ def main() -> int:
         threading.Thread(target=host_server.run, daemon=True).start()
         while not host_server.started:
             time.sleep(0.05)
-        env.update(EXCEL_BRIDGE_IMAGE_HOST=settings.public_url, EXCEL_BRIDGE_IMAGE_TOKEN=IMAGE_TOKEN)
+        if relay:
+            env.update(EXCEL_BRIDGE_IMAGE_HOST="relay", EXCEL_BRIDGE_RELAY_URL=settings.public_url)
+        else:
+            env.update(EXCEL_BRIDGE_IMAGE_HOST=settings.public_url, EXCEL_BRIDGE_IMAGE_TOKEN=IMAGE_TOKEN)
     started = time.monotonic()
     if args.desktop:
         output, checks = run_desktop(launcher, args, root, webview, project, env)
@@ -459,8 +470,10 @@ def main() -> int:
     if args.images:
         urls = [image_urls(body.get("input")) for body in backend.requests]
         hosted = sorted({url for request_urls in urls for url in request_urls})
-        base = FAKE_TUNNEL if args.images == "local" else env["EXCEL_BRIDGE_IMAGE_HOST"]
-        announced = "Pictures: kept in memory" if args.images == "local" else "Pictures: uploaded to"
+        base = {"local": FAKE_TUNNEL, "remote": env.get("EXCEL_BRIDGE_IMAGE_HOST"),
+                "relay": env.get("EXCEL_BRIDGE_RELAY_URL")}[args.images]
+        announced = {"local": "Pictures: kept in memory", "remote": "Pictures: uploaded to",
+                     "relay": "Pictures: sent through this project's relay"}[args.images]
         checks += [
             (announced in output + _desktop_log(root), f"the bridge did not announce {announced!r}"),
             (not any("data:" in url for request_urls in urls for url in request_urls),

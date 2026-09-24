@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import importlib.util
+import io
 import json
 import os
 import tempfile
@@ -21,6 +23,8 @@ TOKEN = "group-token-0123456789"
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 OTHER_PNG = b"\x89PNG\r\n\x1a\n" + b"\x01" * 64
 JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 32
+OPENAI = {"user-agent": "OpenAI File Downloader"}
+HAS_PILLOW = importlib.util.find_spec("PIL") is not None
 
 
 def data_url(data: bytes, media_type: str = "image/png") -> str:
@@ -41,27 +45,29 @@ class HostHarness:
     def __init__(self, directory: Path | None = None, clock: Clock | None = None, **settings) -> None:
         self.directory = directory or Path(tempfile.mkdtemp())
         self.clock = clock or Clock()
+        settings.setdefault("tokens", (TOKEN,))
         self.settings = image_host.Settings(
-            public_url="https://img.example.com", tokens=(TOKEN,), directory=self.directory, **settings
+            public_url="https://img.example.com", directory=self.directory, **settings
         )
         self.app = image_host.create_app(self.settings, clock=self.clock)
 
-    def client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url="https://img.example.com")
+    def client(self, address: str = "127.0.0.1") -> httpx.AsyncClient:
+        transport = httpx.ASGITransport(app=self.app, client=(address, 50000))
+        return httpx.AsyncClient(transport=transport, base_url="https://img.example.com")
 
-    def request(self, method: str, path: str, **kwargs) -> httpx.Response:
+    def request(self, method: str, path: str, address: str = "127.0.0.1", **kwargs) -> httpx.Response:
         async def run():
-            async with self.client() as client:
+            async with self.client(address) as client:
                 return await client.request(method, path, **kwargs)
 
         return asyncio.run(run())
 
-    def upload(self, data: bytes, token: str | None = TOKEN) -> httpx.Response:
+    def upload(self, data: bytes, token: str | None = TOKEN, address: str = "127.0.0.1") -> httpx.Response:
         headers = {"authorization": f"Bearer {token}"} if token else {}
-        return self.request("POST", "/upload", content=data, headers=headers)
+        return self.request("POST", "/upload", address=address, content=data, headers=headers)
 
-    def get(self, url: str) -> httpx.Response:
-        return self.request("GET", url.removeprefix("https://img.example.com"))
+    def get(self, url: str, headers: dict | None = None) -> httpx.Response:
+        return self.request("GET", url.removeprefix("https://img.example.com"), headers=headers)
 
 
 class ImageHostTests(unittest.TestCase):
@@ -147,6 +153,139 @@ class ImageHostTests(unittest.TestCase):
             settings = image_host.Settings.from_env()
         self.assertEqual(settings.tokens, (TOKEN, "other-token-0123456789"))
         self.assertEqual(settings.ttl_seconds, 7200)
+        self.assertEqual((settings.open_uploads, settings.fetchers, settings.reencode), (False, (), False))
+        self.assertEqual((settings.uploads_per_hour, settings.upload_bytes_per_day), (0, 0))
+
+
+class RelayTests(unittest.TestCase):
+    """``IMAGE_HOST_OPEN=1``: anyone may upload, so the relay guards itself instead."""
+
+    def relay(self, **settings) -> HostHarness:
+        return HostHarness(tokens=(), open_uploads=True, **settings)
+
+    def test_uploads_need_no_token(self):
+        host = self.relay()
+        response = host.upload(PNG, token=None)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(host.get(response.json()["url"]).content, PNG)
+
+    def test_each_address_has_an_hourly_quota(self):
+        clock = Clock()
+        host = self.relay(clock=clock, uploads_per_hour=2)
+        self.assertEqual([host.upload(PNG, None).status_code for _ in range(3)], [200, 200, 429])
+        self.assertIn("uploads in an hour", host.upload(PNG, None).json()["error"]["message"])
+        self.assertEqual(host.upload(PNG, None, address="198.51.100.7").status_code, 200)
+        clock.now += 3601
+        self.assertEqual(host.upload(PNG, None).status_code, 200)
+
+    def test_each_address_has_a_daily_byte_quota(self):
+        clock = Clock()
+        host = self.relay(clock=clock, upload_bytes_per_day=len(PNG) * 2 + 1)
+        self.assertEqual([host.upload(PNG, None).status_code for _ in range(3)], [200, 200, 429])
+        clock.now += 86401
+        self.assertEqual(host.upload(PNG, None).status_code, 200)
+        host.app.state.quota.forget_idle()
+        self.assertEqual(list(host.app.state.quota._seen), ["127.0.0.1"])
+        clock.now += 86401
+        host.app.state.quota.forget_idle()
+        self.assertEqual(host.app.state.quota._seen, {})
+
+    def test_refused_files_do_not_use_up_the_quota(self):
+        host = self.relay(uploads_per_hour=1)
+        self.assertEqual(host.upload(b"<html>", None).status_code, 415)
+        self.assertEqual(host.upload(PNG, None).status_code, 200)
+
+    def test_pictures_are_only_served_to_the_fetchers(self):
+        host = self.relay(fetchers=("OpenAI",))
+        url = host.upload(PNG, None).json()["url"]
+        browser = {"user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0"}
+        for headers in (browser, {"user-agent": "curl/8.5.0"}, None):
+            with self.subTest(headers=headers):
+                self.assertEqual(host.get(url, headers).status_code, 403)
+        response = host.get(url, OPENAI)
+        self.assertEqual((response.status_code, response.content), (200, PNG))
+        self.assertEqual(host.get(url.replace(".png", ".jpg"), OPENAI).status_code, 404)
+
+    def test_settings_for_a_public_relay(self):
+        env = {"IMAGE_HOST_PUBLIC_URL": "https://img.example.com", "IMAGE_HOST_OPEN": "1"}
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.dict("sys.modules", {"PIL": mock.Mock()}):
+            settings = image_host.Settings.from_env()
+        self.assertEqual(settings.tokens, ())
+        self.assertTrue(settings.open_uploads and settings.reencode)
+        self.assertEqual(settings.fetchers, ("OpenAI",))
+        self.assertEqual(settings.ttl_seconds, 3600)
+        self.assertEqual(settings.max_bytes, 5 * 1024 * 1024)
+        self.assertEqual((settings.uploads_per_hour, settings.upload_bytes_per_day), (240, 300 * 1024 * 1024))
+        env.update(IMAGE_HOST_FETCHERS="*", IMAGE_HOST_REENCODE="0", IMAGE_HOST_UPLOADS_PER_HOUR="10")
+        with mock.patch.dict(os.environ, env, clear=True):
+            settings = image_host.Settings.from_env()
+        self.assertEqual((settings.fetchers, settings.reencode, settings.uploads_per_hour), ((), False, 10))
+        with mock.patch.dict(os.environ, {**env, "IMAGE_HOST_REENCODE": "1"}, clear=True), \
+                mock.patch.dict("sys.modules", {"PIL": None}):
+            with self.assertRaises(SystemExit):
+                image_host.Settings.from_env()
+
+
+@unittest.skipUnless(HAS_PILLOW, "needs Pillow")
+class ReencodeTests(unittest.TestCase):
+    def setUp(self):
+        self.host = HostHarness(tokens=(), open_uploads=True, reencode=True)
+
+    def stored(self, data: bytes):
+        from PIL import Image
+
+        response = self.host.upload(data, None)
+        self.assertEqual(response.status_code, 200, response.text)
+        content = self.host.get(response.json()["url"]).content
+        return response.json()["url"], content, Image.open(io.BytesIO(content))
+
+    def test_png_metadata_and_trailing_bytes_are_dropped(self):
+        from PIL import Image, PngImagePlugin
+
+        info = PngImagePlugin.PngInfo()
+        info.add_text("Author", "secret-author")
+        out = io.BytesIO()
+        Image.new("RGB", (4, 3), (10, 20, 30)).save(out, "PNG", pnginfo=info)
+        url, content, picture = self.stored(out.getvalue() + b"<script>hidden</script>")
+        self.assertTrue(url.endswith(".png"))
+        self.assertNotIn(b"secret-author", content)
+        self.assertNotIn(b"hidden", content)
+        self.assertEqual((picture.size, picture.getpixel((0, 0))), ((4, 3), (10, 20, 30)))
+
+    def test_jpegs_lose_exif_but_stay_upright(self):
+        from PIL import Image
+
+        exif = Image.Exif()
+        exif[0x0112] = 6  # stored sideways
+        exif[0x010E] = "secret-place"
+        out = io.BytesIO()
+        Image.new("RGB", (40, 20), (200, 100, 50)).save(out, "JPEG", exif=exif.tobytes())
+        url, content, picture = self.stored(out.getvalue())
+        self.assertTrue(url.endswith(".jpg"))
+        self.assertNotIn(b"secret-place", content)
+        self.assertNotIn(b"Exif", content)
+        self.assertEqual(picture.size, (20, 40))
+
+    def test_animations_keep_their_first_frame(self):
+        from PIL import Image
+
+        frames = [Image.new("P", (5, 5), index) for index in (1, 2)]
+        out = io.BytesIO()
+        frames[0].save(out, "GIF", save_all=True, append_images=frames[1:])
+        url, _content, picture = self.stored(out.getvalue())
+        self.assertTrue(url.endswith(".png"))
+        self.assertFalse(getattr(picture, "is_animated", False))
+
+    def test_broken_or_huge_pictures_are_refused(self):
+        from PIL import Image
+
+        self.assertEqual(self.host.upload(PNG, None).status_code, 415)
+        out = io.BytesIO()
+        Image.new("L", (10, 10)).save(out, "PNG")
+        with mock.patch.object(image_host, "MAX_PIXELS", 99):
+            response = self.host.upload(out.getvalue(), None)
+        self.assertEqual(response.status_code, 415)
+        self.assertIn("megapixels", response.json()["error"]["message"])
 
 
 def codex_body(*pictures: str) -> dict:
@@ -290,6 +429,29 @@ class UploaderTests(unittest.TestCase):
                 self.assertIn("ConnectError", picture["text"])
         self.assertEqual(len(self.uploads), 2)
 
+    def test_when_cloudflare_is_out_of_reach_the_relay_is_suggested(self):
+        class Unreachable:
+            def link(self, data):
+                raise ConnectionError("the Cloudflare link did not come up (no connection)")
+
+            def settling(self):
+                return 0.0
+
+            def stop(self):
+                pass
+
+        uploader = images.ImageUploader(images.LocalHost(Unreachable()))
+        rewritten, linked = rewrite(uploader, codex_body(data_url(PNG)))
+        self.assertEqual(linked, 0)
+        self.assertIn("did not come up", pictures_in(rewritten)[0]["text"])
+        self.assertIn("excel-codex image-host relay", pictures_in(rewritten)[0]["text"])
+        uploader = images.ImageUploader(images.LocalHost(Unreachable()))
+        rewritten, _ = rewrite(uploader, codex_body(data_url(PNG)), links=False)
+        self.assertIn(images.FETCH_FAILED, pictures_in(rewritten)[0]["text"])
+        self.assertIn("excel-codex image-host relay", pictures_in(rewritten)[0]["text"])
+        rewritten, _ = rewrite(self.uploader(), codex_body(data_url(PNG)), links=False)
+        self.assertNotIn("relay", pictures_in(rewritten)[0]["text"], "only local mode suggests it")
+
     def test_undecodable_pictures_become_a_note(self):
         rewritten, _ = rewrite(self.uploader(), codex_body("data:image/png,not-base64"))
         self.assertIn("could not be decoded", pictures_in(rewritten)[0]["text"])
@@ -302,7 +464,7 @@ class ConfigTests(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {"EXCEL_BRIDGE_HOME": str(self.home)})
         patcher.start()
         self.addCleanup(patcher.stop)
-        for name in (images.ENV_HOST, images.ENV_TOKEN, "EXCEL_BRIDGE_CLOUDFLARED"):
+        for name in (images.ENV_HOST, images.ENV_TOKEN, images.ENV_RELAY, "EXCEL_BRIDGE_CLOUDFLARED"):
             os.environ.pop(name, None)
         # Only a cloudflared the test puts there counts.
         which = mock.patch("shutil.which", return_value=None)
@@ -331,6 +493,29 @@ class ConfigTests(unittest.TestCase):
         images.config_path().write_text("[not a setting]")
         self.assertEqual(images.load_setting(), images.DEFAULT_SETTING)
 
+    def test_the_relay_is_this_projects_host_without_a_token(self):
+        images.save_setting(images.relay_setting())
+        self.assertEqual(json.loads(images.config_path().read_text()), {"mode": "relay"})
+        setting = images.load_setting()
+        self.assertEqual((setting.mode, setting.url, setting.token), (images.RELAY, images.RELAY_URL, ""))
+        self.assertEqual(setting.upload_url, "https://img.aigcnews.cn/upload")
+        self.assertIn("an hour after its last use", images.describe(setting))
+        with mock.patch.dict(os.environ, {images.ENV_HOST: "relay", images.ENV_RELAY: "https://mirror.example.com/"}):
+            setting = images.load_setting()
+        self.assertEqual((setting.mode, setting.url, setting.source), (images.RELAY, "https://mirror.example.com",
+                                                                       images.ENV_HOST))
+        uploader = images.build_uploader(setting)
+        self.assertIsInstance(uploader.host, images.RemoteHost)
+        self.assertEqual(uploader.host.setting.upload_url, "https://mirror.example.com/upload")
+
+    def test_check_without_a_token_sends_none(self):
+        def host(request: httpx.Request) -> httpx.Response:
+            self.assertNotIn("authorization", request.headers)
+            return httpx.Response(415, json={"error": {"message": "only images"}})
+
+        client = httpx.Client(transport=httpx.MockTransport(host))
+        self.assertEqual(images.check(images.relay_setting(), client), (True, f"{images.RELAY_URL} is up."))
+
     def test_catalog_offers_pictures_only_when_they_can_be_passed_on(self):
         def modalities():
             catalog = cli._write_catalog(self.home)
@@ -342,6 +527,8 @@ class ConfigTests(unittest.TestCase):
         images.save_setting(images.Setting(images.OFF))
         self.assertEqual(modalities(), {("text",)})
         images.save_setting(REMOTE)
+        self.assertEqual(modalities(), {("text", "image")})
+        images.save_setting(images.relay_setting())
         self.assertEqual(modalities(), {("text", "image")})
         self.assertEqual(codex_config.catalog_payload(images=True)["models"][0]["input_modalities"], ["text", "image"])
 
@@ -384,6 +571,20 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cli.main(["image-host"]), 1, "local, but no cloudflared")
         self.fake_cloudflared()
         self.assertEqual(cli.main(["image-host"]), 0)
+
+    def test_image_host_relay_command(self):
+        with mock.patch.object(images, "check", return_value=(False, "cannot reach")) as check:
+            self.assertEqual(cli.main(["image-host", "relay"]), 1)
+        self.assertEqual(check.call_args.args[0].url, images.RELAY_URL)
+        self.assertEqual(images.load_setting().mode, images.LOCAL, "nothing was saved")
+        with mock.patch.object(images, "check", return_value=(True, "up")), \
+                mock.patch.object(cli, "_print") as printed:
+            self.assertEqual(cli.main(["image-host", "relay"]), 0)
+            self.assertEqual(cli.main(["image-host"]), 0)
+        self.assertEqual(images.load_setting().mode, images.RELAY)
+        shown = "\n".join(str(call.args[0]) for call in printed.call_args_list)
+        for promise in (images.RELAY_URL, "not to browsers", "deleted an hour after its last use", "metadata"):
+            self.assertIn(promise, shown)
 
 
 class FakeHost:

@@ -18,6 +18,8 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+# For running the image host (image_host.py) as a public relay.
+host = ["Pillow>=10.4"]
 
 [project.scripts]
 excel-codex-bridge = "excel_codex_bridge.cli:main"
