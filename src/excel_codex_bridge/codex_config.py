@@ -33,6 +33,10 @@ You are Codex, a coding agent running in the user's terminal. You and the user s
 - When done, reply concisely: what changed (with file paths), how it was verified, and anything left for the user. Use plain Markdown and do not paste whole files.
 """
 
+CATALOG_ORDER = ("gpt-5.6-sol-excel", "gpt-6-astra-excel", "gpt-5.6-terra-excel", "gpt-5.6-luna-excel")
+# Listed, but not yet confirmed to be served by the Excel backend.
+EXPERIMENTAL_MODELS = frozenset({"gpt-6-astra-excel"})
+
 _REASONING_LEVEL_DESCRIPTIONS = {
     "low": "Fast responses with lighter reasoning",
     "medium": "Balances speed and reasoning depth for everyday tasks",
@@ -54,19 +58,18 @@ def state_dir() -> Path:
 def catalog_payload() -> dict[str, object]:
     """Codex ``model_catalog_json`` entries for the Excel aliases."""
     models = []
-    for priority, model_id in enumerate(
-        ("gpt-5.6-sol-excel", "gpt-5.6-terra-excel", "gpt-5.6-luna-excel")
-    ):
+    for priority, model_id in enumerate(CATALOG_ORDER):
         caps = excel_upstream.LOCAL_MODEL_CAPABILITIES[model_id]
         context_window = int(caps["context_window"])
         # Codex compacts at this many tokens; keep a build buffer under the window.
         auto_compact = min(int(caps["auto_compact_token_limit"]), context_window - 8000)
+        experimental = " · experimental" if model_id in EXPERIMENTAL_MODELS else ""
         models.append(
             {
                 "slug": model_id,
                 "display_name": caps["display_name"],
                 "description": (
-                    f"ChatGPT Excel add-in session · {context_window:,} token context · "
+                    f"ChatGPT Excel add-in session · {context_window:,} token context{experimental} · "
                     "counts against your ChatGPT plan, not API billing."
                 ),
                 "default_reasoning_level": "medium",

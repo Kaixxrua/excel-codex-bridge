@@ -69,8 +69,12 @@ excel-codex status                            检查会话是否可用、何时�
 | `gpt-5.6-sol-excel`（默认） | `gpt-5.6-sol` | 272k |
 | `gpt-5.6-terra-excel` | `gpt-5.6-terra` | 272k |
 | `gpt-5.6-luna-excel` | `gpt-5.6-luna` | 200k |
+| `gpt-6-astra-excel`（实验性） | `gpt-6-astra` | 按 272k 处理 |
 
 推理强度 `low` / `medium` / `high` / `xhigh`，默认 `medium`。
+
+`gpt-6-astra-excel` 还没确认 Excel 后端支持。如果报模型不可用，说明你的账号或 Excel 后端还没开放它。
+遇到新模型时，也可以设置 `GHCP_EXCEL_UPSTREAM_MODEL=<上游模型名>`，把所有请求强制发给那个模型来试。
 
 ## 代理
 

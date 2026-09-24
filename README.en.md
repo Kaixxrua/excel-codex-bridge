@@ -77,8 +77,13 @@ Launcher options: `--model`, `--proxy`, `--port`, `--codex <path>`, `--webview-d
 | `gpt-5.6-sol-excel` (default) | `gpt-5.6-sol` | 272k |
 | `gpt-5.6-terra-excel` | `gpt-5.6-terra` | 272k |
 | `gpt-5.6-luna-excel` | `gpt-5.6-luna` | 200k |
+| `gpt-6-astra-excel` (experimental) | `gpt-6-astra` | treated as 272k |
 
 Reasoning effort `low` / `medium` / `high` / `xhigh`, default `medium`.
+
+`gpt-6-astra-excel` is not yet confirmed on the Excel backend; a model error means it is not
+available to your account there yet. To try any other upstream model, set
+`GHCP_EXCEL_UPSTREAM_MODEL=<upstream name>`, which sends every request to that model.
 
 ## Proxy
 

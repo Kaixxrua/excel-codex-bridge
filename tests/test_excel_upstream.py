@@ -1461,6 +1461,7 @@ class ExcelUpstreamTests(unittest.TestCase):
                 "gpt-5.6-luna-excel",
                 "gpt-5.6-terra-excel",
                 "gpt-5.6-sol-excel",
+                "gpt-6-astra-excel",
             ],
         )
 

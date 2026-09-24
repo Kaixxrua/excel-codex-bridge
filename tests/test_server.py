@@ -180,6 +180,16 @@ class ResponsesRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(harness.upstream_json()["model"], "gpt-5.6-luna")
 
+    def test_astra_alias_reaches_upstream_as_gpt_6_astra(self):
+        harness = BridgeHarness(ok_stream)
+        for model in ("gpt-6-astra-excel", "gpt-6-astra"):
+            with self.subTest(model=model):
+                response = harness.request(
+                    "POST", "/v1/responses", json={"model": model, "input": "ping", "stream": True}
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(harness.upstream_json()["model"], "gpt-6-astra")
+
     def test_compressed_request_bodies_are_decoded(self):
         payload = json.dumps({"model": "gpt-5.6-sol-excel", "input": "ping", "stream": True}).encode()
         for encoding, data in (

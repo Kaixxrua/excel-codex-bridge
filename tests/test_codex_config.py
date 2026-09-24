@@ -35,6 +35,11 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(efforts, ["low", "medium", "high", "xhigh"])
         luna = next(m for m in models if m["slug"] == "gpt-5.6-luna-excel")
         self.assertEqual(luna["context_window"], 200_000)
+        astra = next(m for m in models if m["slug"] == "gpt-6-astra-excel")
+        self.assertIn("experimental", astra["description"])
+
+    def test_catalog_order_covers_every_served_model(self):
+        self.assertEqual(sorted(codex_config.CATALOG_ORDER), sorted(excel_upstream.MODEL_IDS))
 
     def test_write_catalog_is_valid_json(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -44,13 +49,14 @@ class CatalogTests(unittest.TestCase):
 
 class OverrideTests(unittest.TestCase):
     def test_overrides_route_one_session_through_the_bridge(self):
-        args = codex_config.codex_overrides(4321, Path("/tmp/catalog.json"))
+        catalog = Path("/tmp/catalog.json")
+        args = codex_config.codex_overrides(4321, catalog)
         parsed = parse_overrides(args)
         self.assertEqual(parsed["model"], "gpt-5.6-sol-excel")
         self.assertEqual(parsed["model_provider"], "excel-bridge")
         self.assertEqual(parsed["model_providers.excel-bridge.base_url"], "http://127.0.0.1:4321/v1")
         self.assertEqual(parsed["model_providers.excel-bridge.wire_api"], "responses")
-        self.assertEqual(parsed["model_catalog_json"], "/tmp/catalog.json")
+        self.assertEqual(parsed["model_catalog_json"], str(catalog))
 
     def test_windows_paths_survive_toml_parsing(self):
         path = PureWindowsPath(r"C:\Users\张三\AppData\Local\excel-codex-bridge\codex-model-catalog.json")
