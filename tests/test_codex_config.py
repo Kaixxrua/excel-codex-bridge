@@ -24,11 +24,11 @@ def parse_overrides(args: list[str]) -> dict:
 
 
 class CatalogTests(unittest.TestCase):
-    def test_catalog_lists_the_three_excel_models_text_only(self):
+    def test_catalog_lists_the_excel_models_with_pictures(self):
         models = codex_config.catalog_payload()["models"]
         self.assertEqual({m["slug"] for m in models}, set(excel_upstream.MODEL_IDS))
         for model in models:
-            self.assertEqual(model["input_modalities"], ["text"])
+            self.assertEqual(model["input_modalities"], ["text", "image"])
             self.assertFalse(model["supports_parallel_tool_calls"])
             self.assertLess(model["auto_compact_token_limit"], model["context_window"])
             efforts = [level["effort"] for level in model["supported_reasoning_levels"]]

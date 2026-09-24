@@ -268,19 +268,18 @@ class ExcelUpstreamTests(unittest.TestCase):
             }
 
         original = body("data:image/png;base64,iVBORw0KGgo=")["input"]
-        # The link changes when the Cloudflare tunnel restarts mid-turn, or
-        # becomes a text note when upstream could not fetch it.
+        # Inline on one attempt, uploaded or a text note on the next.
         first = excel_upstream.prepare_responses_body(
-            body("https://a.trycloudflare.com/i/x.png"), identity_input=original
+            body("https://a.example.com/i/x.png"), identity_input=original
         )
         second = excel_upstream.prepare_responses_body(
-            body("https://b.trycloudflare.com/i/x.png"), identity_input=original
+            body("https://b.example.com/i/x.png"), identity_input=original
         )
         self.assertEqual(first["metadata"]["turn_id"], second["metadata"]["turn_id"])
         self.assertEqual(first["metadata"]["task_id"], second["metadata"]["task_id"])
         self.assertEqual(second["metadata"]["agent_iteration"], "2")
-        self.assertIn("b.trycloudflare.com", json.dumps(second["input"]))
-        unpinned = excel_upstream.prepare_responses_body(body("https://b.trycloudflare.com/i/x.png"))
+        self.assertIn("b.example.com", json.dumps(second["input"]))
+        unpinned = excel_upstream.prepare_responses_body(body("https://b.example.com/i/x.png"))
         self.assertNotEqual(first["metadata"]["turn_id"], unpinned["metadata"]["turn_id"])
 
     def test_encrypted_reasoning_is_replayed_and_bare_reasoning_dropped(self):

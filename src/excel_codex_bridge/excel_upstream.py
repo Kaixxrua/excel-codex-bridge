@@ -1629,9 +1629,9 @@ def prepare_responses_body(
     """Translate a standard Responses request to the Excel add-in wire shape.
 
     ``identity_input``: the input as the client sent it, when ``source`` has
-    been rewritten since (pictures swapped for links, which can change from one
-    request to the next).  Task and turn identity come from it, so a turn keeps
-    its ``turn_id`` however its pictures were passed on.
+    been rewritten since (pictures swapped for uploaded file ids or notes,
+    which can change from one attempt to the next).  Task and turn identity
+    come from it, so a turn keeps its ``turn_id`` however its pictures went in.
     """
     output: dict[str, object] = {
         "model": upstream_model_for(source.get("model")),

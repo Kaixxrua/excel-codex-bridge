@@ -28,8 +28,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      # Pillow for the image host's re-encoding tests (the `host` extra).
-      - run: python -m pip install -r requirements.txt pytest Pillow
+      - run: python -m pip install -r requirements.txt pytest
       - run: python -m pytest -q
 
   e2e-linux:
@@ -53,28 +52,6 @@ jobs:
         run: python tests/e2e/run_e2e.py --images -- ./excel-codex.sh
       - name: e2e (excel-codex.sh desktop, pictures)
         run: python tests/e2e/run_e2e.py --desktop --images -- ./excel-codex.sh
-      - name: e2e (excel-codex.sh, pictures through an image host)
-        run: python tests/e2e/run_e2e.py --images remote -- ./excel-codex.sh
-      - name: e2e (excel-codex.sh, pictures through the relay)
-        run: python tests/e2e/run_e2e.py --images relay -- ./excel-codex.sh
-
-  image-host-docker:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: One-click deploy (open relay, behind a proxy)
-        run: deploy/image-host/deploy.sh img.example.com --relay --behind-proxy --port 18095
-      - name: Upload, then fetch as a browser and as OpenAI
-        run: |
-          python3 -c "import base64,sys; sys.stdout.buffer.write(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=='))" > dot.png
-          url=$(curl -sf -X POST -H 'content-type: image/png' --data-binary @dot.png http://127.0.0.1:18095/upload \
-            | python3 -c "import json,sys; print(json.load(sys.stdin)['url'])")
-          path=${url#https://img.example.com}
-          test "$(curl -s -o /dev/null -w '%{http_code}' -A 'Mozilla/5.0' "http://127.0.0.1:18095$path")" = 403
-          test "$(curl -s -o /dev/null -w '%{http_code}' -A 'OpenAI File Downloader' "http://127.0.0.1:18095$path")" = 200
-      - if: failure()
-        run: docker compose -f deploy/image-host/docker-compose.yml logs
 
   windows:
     needs: test
@@ -96,12 +73,6 @@ jobs:
           --name excel-codex --paths src
           --collect-submodules uvicorn --hidden-import anyio._backends._asyncio
           packaging/entry.py
-
-      - name: Add cloudflared
-        run: |
-          python packaging/cloudflared.py windows-amd64 dist/excel-codex
-          dist/excel-codex/cloudflared.exe --version
-          dist/excel-codex/excel-codex.exe image-host
 
       - name: e2e (excel-codex.exe)
         run: python tests/e2e/run_e2e.py -- dist/excel-codex/excel-codex.exe
@@ -147,10 +118,8 @@ jobs:
         include:
           - runner: macos-15
             arch: arm64
-            cloudflared: darwin-arm64
           - runner: macos-15-intel
             arch: x64
-            cloudflared: darwin-amd64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -169,12 +138,6 @@ jobs:
           --name excel-codex --paths src
           --collect-submodules uvicorn --hidden-import anyio._backends._asyncio
           packaging/entry.py
-
-      - name: Add cloudflared
-        run: |
-          python packaging/cloudflared.py ${{ matrix.cloudflared }} dist/excel-codex
-          dist/excel-codex/cloudflared --version
-          dist/excel-codex/excel-codex image-host
 
       - name: e2e (excel-codex)
         run: python tests/e2e/run_e2e.py -- dist/excel-codex/excel-codex

@@ -8,7 +8,6 @@ the signed-in add-in already cached on this machine.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import gzip
 import ipaddress
@@ -31,7 +30,7 @@ log = logging.getLogger("excel_codex_bridge")
 
 MAX_BODY_BYTES = 64 * 1024 * 1024
 NON_STREAMING_ATTEMPTS = 2
-# Upstream answers when it cannot use a picture link; the request is then sent again without them.
+# Upstream answers when it will not take a request's pictures as they are.
 PICTURE_RETRY_STATUSES = {400, 422}
 _LOOPBACK_NAMES = {"localhost"}
 _REFRESH_HINT = (
@@ -173,17 +172,16 @@ def _error_text(response: Response) -> str:
         return "no details"
 
 
+def _refused(response: Response) -> bool:
+    return response.status_code in PICTURE_RETRY_STATUSES
+
+
 class Bridge:
-    def __init__(
-        self,
-        reader: SessionReader,
-        client_factory=build_upstream_client,
-        uploader: images.ImageUploader | None = None,
-    ) -> None:
+    def __init__(self, reader: SessionReader, client_factory=build_upstream_client) -> None:
         self.reader = reader
         self._client_factory = client_factory
         self._client: httpx.AsyncClient | None = None
-        self.images = uploader or images.ImageUploader()
+        self.pictures = images.Pictures()
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -192,7 +190,6 @@ class Bridge:
         return self._client
 
     async def aclose(self) -> None:
-        await self.images.aclose()
         if self._client is not None:
             await self._client.aclose()
             self._client = None
@@ -215,31 +212,46 @@ class Bridge:
         except RuntimeError as exc:
             detail = f" ({self.reader.last_error})" if self.reader.last_error else ""
             return sse.openai_error_response(401, f"{exc}{detail} {_REFRESH_HINT}")
-        # The backend takes pictures only as links it can fetch, never inline.
-        linked_body, linked = await self.images.rewrite(body)
-        response = await self._send(headers, linked_body, body)
-        delay = self.images.retry_delay() if linked else 0.0
-        if delay and response.status_code in PICTURE_RETRY_STATUSES:
-            log.info(
-                "the request with picture links was refused (HTTP %s: %s); the link is new, retrying in %.0fs",
-                response.status_code, _error_text(response), delay,
-            )
-            await asyncio.sleep(delay)
-            response = await self._send(headers, linked_body, body)
-        if linked and response.status_code in PICTURE_RETRY_STATUSES:
-            log.warning(
-                "the request with picture links was refused (HTTP %s: %s); sending it without the pictures",
-                response.status_code, _error_text(response),
-            )
-            plain_body, _ = await self.images.rewrite(body, links=False)
-            response = await self._send(headers, plain_body, body)
+        return await self._send_with_pictures(headers, body)
+
+    async def _send_with_pictures(self, headers: dict, body: dict) -> Response:
+        """Pictures go inline where the backend takes them, else uploaded, else left out."""
+        sent = await self.pictures.rewrite(body, self.client, headers)
+        response = await self._send(headers, sent.body, body)
+        uploaded = set(sent.uploaded)
+        while sent.pictures and _refused(response):
+            omit = None
+            if sent.reused:
+                # Uploads from an earlier request may be gone by now.
+                log.info(
+                    "the backend refused pictures uploaded earlier (HTTP %s: %s); uploading them again",
+                    response.status_code, _error_text(response),
+                )
+                self.pictures.forget(sent.reused)
+            elif sent.inline:
+                # One kind at a time, user messages first: they are known not to take them.
+                kind = "message" if "message" in sent.inline else min(sent.inline)
+                log.info(
+                    "the backend refused a request with pictures inline (HTTP %s: %s); uploading those in %s",
+                    response.status_code, _error_text(response), kind,
+                )
+                self.pictures.refuse_inline(kind)
+            else:
+                log.warning(
+                    "the backend refused the request with its pictures (HTTP %s: %s); sending it without them",
+                    response.status_code, _error_text(response),
+                )
+                omit = "the Excel backend did not accept it"
+            sent = await self.pictures.rewrite(body, self.client, headers, omit=omit, fresh=uploaded)
+            uploaded |= sent.uploaded
+            response = await self._send(headers, sent.body, body)
         return response
 
     async def _send(self, headers: dict, body: dict, original: dict) -> Response:
         upstream_body = excel_upstream.prepare_responses_body(
             body,
             tools_version_id=self.reader.store.tools_version_id(),
-            # Turn identity must not depend on how pictures were passed on.
+            # Turn identity must not depend on how pictures went in.
             identity_input=original.get("input"),
         )
         if upstream_body.get("stream"):
@@ -360,14 +372,9 @@ class Bridge:
         return JSONResponse(content=translated)
 
 
-def create_app(
-    reader: SessionReader | None = None,
-    *,
-    client_factory=build_upstream_client,
-    uploader: images.ImageUploader | None = None,
-):
+def create_app(reader: SessionReader | None = None, *, client_factory=build_upstream_client):
     """Build the ASGI app (wrapped in the loopback guard)."""
-    bridge = Bridge(reader or SessionReader(), client_factory, uploader or images.build_uploader())
+    bridge = Bridge(reader or SessionReader(), client_factory)
 
     @contextlib.asynccontextmanager
     async def lifespan(_app):

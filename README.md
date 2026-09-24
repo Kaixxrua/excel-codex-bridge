@@ -26,8 +26,8 @@ Codex CLI ──(Responses API, 127.0.0.1)──▶ excel-codex-bridge ──(HT
   以及任何带 `Origin` 头的浏览器请求。`serve` 拒绝绑定 `0.0.0.0`。
 - **工具调用**：Excel 后端不接受客户端自带工具。桥接把 Codex 的工具（shell、apply_patch…）
   写进提示词，模型通过后端原生的 `run_officejs` 回传调用，桥接再还原成 Codex 的工具调用。
-- **图片**：后端只收 OpenAI 能下载的图片链接，桥接默认把图片留在本机内存里，
-  通过一条临时隧道只让 OpenAI 短时间取走，见[图片](#图片)。
+- **图片**：图片和请求一样只发给 OpenAI。后端不收内嵌图片的地方，桥接像加载项的「上传文件」按钮
+  那样把图片传到 OpenAI 再引用，见[图片](#图片)。
 - **不乱改你的 Codex 配置**：命令行启动器用 `-c` 参数临时指定 provider 和模型目录，
   `~/.codex/config.toml` 保持原样。只有[桌面版模式](#在-codex-桌面版--ide-插件中使用)会改它，
   窗口关闭即按原样恢复，并留有备份。
@@ -175,60 +175,19 @@ TLS 证书校验始终开启。Codex 到桥接走 `127.0.0.1`，启动器会自�
 
 ## 图片
 
-Codex 里贴的截图、`codex -i 图片.png` 和模型用 `view_image` 看图都能用。Excel 后端只接受 OpenAI
-能下载的图片链接，不收直接内嵌在请求里的图片，所以桥接默认这样转交：
+Codex 里贴的截图、`codex -i 图片.png` 和模型用 `view_image` 看图都能用，不需要任何设置。桥接这样转交：
 
-- 图片只放在桥接进程的**内存**里，不写盘，桥接退出就没了；
-- 第一次发图时，桥接用免安装版自带的 [cloudflared](https://github.com/cloudflare/cloudflared)
-  开一条临时的 Cloudflare 隧道（`https://<随机词>.trycloudflare.com`，不需要账号）；
-- 每张图的链接名随机、猜不到，只在**带着这张图的请求发出后 5 分钟内**能下载；
-  隧道那头除了这些图什么也访问不到。
+- **能内嵌就内嵌**：图片按 Codex 发来的样子（`data:` 内嵌）随请求发出，不另外上传；
+- **不收内嵌时才上传**：Excel 后端不收内嵌图片的地方（目前是用户消息里的图），桥接像 Excel
+  加载项里的「上传文件」按钮那样，用同一个登录会话把图片传到 OpenAI 的附件接口
+  （`bps.openai.com/basispoints/api/attachments`），请求里改用返回的文件 ID。哪里不收是桥接自己
+  试出来的：第一次被拒就改为上传并记住，之后同类位置的图直接上传；
+- **同一张图只传一次**：本次运行里后续请求直接复用文件 ID（按账号区分，只记在内存里）；
+- 上传失败或后端仍不接受时，桥接把图片换成一句说明再发送，对话不会中断，原因写在窗口或
+  `bridge.log` 里。
 
-图片经 Cloudflare 的网络送到 OpenAI，不会上传到别的地方。开隧道要几秒钟；隧道连接不走
-`--proxy`，网络挡住了 Cloudflare 隧道（出站 7844 端口）时用不了。隧道开不起来或 OpenAI
-下载失败时，桥接会把图片换成一句说明再发送，对话不会中断，原因写在窗口或 `bridge.log` 里。
-
-`excel-codex image-host` 查看当前方式，也可以切换（改完重启 `excel-codex`；桌面版模式还要重启 Codex 桌面版）：
-
-| 命令 | 作用 |
-| --- | --- |
-| `excel-codex image-host local` | 默认：从本机转交（上面的方式） |
-| `excel-codex image-host relay` | 经本项目的公共中转转交（见下） |
-| `excel-codex image-host off` | 关闭图片，模型只收文字 |
-| `excel-codex image-host set <地址> <令牌>` | 上传到你自己的图床（见下） |
-
-从源码运行或在 WSL 里需要自己装 cloudflared（Windows：`winget install Cloudflare.cloudflared`，
-macOS：`brew install cloudflared`），或者把它放进状态目录的 `bin/`。找不到 cloudflared 时图片自动关闭。
-
-**公共中转（可选）**：网络连不上 Cloudflare 隧道时，可以运行 `excel-codex image-host relay`，
-改用本项目作者运行的中转 `https://img.aigcnews.cn`，不用自己配置任何东西。这样图片会**离开你的电脑**，
-所以默认不开，要你自己选。中转这样处理图片：
-
-- 每张图按像素重新保存一遍，照片的拍摄地点等元数据不会留下；
-- 只给 OpenAI 的下载程序（User-Agent 含 `OpenAI`）看，浏览器和其他人打不开；
-- **最后一次使用 1 小时后删除**，不备份，也不做别的用途。保留 1 小时是因为同一轮对话里每次请求
-  OpenAI 都会重新下载一次图片，删早了模型就看不到之前的图；删晚了没必要，所以不设成几天；
-- 按来源 IP 限额（每小时 240 张、每天 300 MB），防止被当成免费图床滥用。
-
-切回默认用 `excel-codex image-host local`。介意图片出本机时，请继续用默认方式或自建图床。
-
-**自建图床（可选）**：想完全自己掌控时，可以在一台公网服务器上用 Docker 一键部署
-（服务器已装 Docker，域名已解析到它）：
-
-```bash
-git clone https://github.com/Kaixxrua/excel-codex-bridge.git
-cd excel-codex-bridge
-deploy/image-host/deploy.sh img.example.com                  # 私有图床：生成上传令牌，自动申请 https 证书
-deploy/image-host/deploy.sh img.example.com --relay          # 开放中转：不要令牌，按 IP 限额，图片重新保存
-deploy/image-host/deploy.sh img.example.com --behind-proxy   # 已有 Caddy/nginx 占着 80/443 时，只起图床并打印反代配置
-```
-
-不加 `--behind-proxy` 时脚本会一起启动 Caddy，占用 80/443 端口并自动申请证书。设置写在
-`deploy/image-host/.env`（令牌、保留时长、限额），改完或 `git pull` 后重跑同一条命令即可重建。
-脚本最后会打印在电脑上要执行的命令：私有图床是 `excel-codex image-host set <地址> <令牌>`，
-开放中转是设置 `EXCEL_BRIDGE_RELAY_URL` 后用 `relay`。私有图床的图片默认保存 24 小时，
-拿到链接的人都能打开；不用 Docker 也可以直接运行 `python -m excel_codex_bridge.image_host`
-（需要 `pip install 'excel-codex-bridge[host]'` 和上面的环境变量，见 `image_host.py` 开头的说明）。
+图片和请求的其他内容一样只发往 `bps.openai.com`，不经过任何第三方，也不需要隧道、图床或别的配置；
+上传和请求走同一套网络设置（包括 `--proxy`）。上传的图片和你在加载项里上传的文件一样由 OpenAI 保存。
 
 ## 限制
 
@@ -252,10 +211,6 @@ deploy/image-host/deploy.sh img.example.com --behind-proxy   # 已有 Caddy/ngin
 | --- | --- |
 | `EXCEL_BRIDGE_PROXY` | 出站代理（同 `--proxy`） |
 | `EXCEL_BRIDGE_HOME` | 状态目录：模型目录 JSON、`bridge.log`、登录用工作簿，以及让重启后仍能原样回放历史工具调用的 `tool-calls.sqlite3`（保留 60 天）。默认 `%LOCALAPPDATA%\excel-codex-bridge` 或 `~/.excel-codex-bridge` |
-| `EXCEL_BRIDGE_IMAGE_HOST` | 图片方式：`local`、`relay`、`off` 或自建图床地址，优先于 `image-host` 的设置 |
-| `EXCEL_BRIDGE_IMAGE_TOKEN` | 自建图床的上传令牌 |
-| `EXCEL_BRIDGE_RELAY_URL` | `relay` 用的中转地址，默认 `https://img.aigcnews.cn` |
-| `EXCEL_BRIDGE_CLOUDFLARED` | 指定 cloudflared 程序的路径 |
 | `EXCEL_BRIDGE_AUTO_SIGNIN` | 设为 `0` 时不自动打开 Excel（同 `--no-auto-signin`） |
 | `CODEX_HOME` | Codex 配置目录，`desktop` 改写其中的 `config.toml`。默认 `~/.codex` |
 | `GHCP_EXCEL_WEBVIEW2_DATA_DIR` | Windows WebView2 数据根目录（同 `--webview-dir`） |
@@ -278,8 +233,6 @@ PYTHONPATH=src .venv/bin/python -m pytest
 Excel 会话读取和 Basispoints 协议适配代码提取自
 [Nonary/ghcp_proxy](https://github.com/Nonary/ghcp_proxy)（Unlicense，基于 commit `ad23ce2`，
 原许可见 [UPSTREAM-LICENSE](UPSTREAM-LICENSE)）。本项目同样以 [Unlicense](LICENSE) 发布。
-免安装版附带 Cloudflare 的 [cloudflared](https://github.com/cloudflare/cloudflared) 用于转交图片，
-它以 Apache License 2.0 发布（包内 `CLOUDFLARED-LICENSE`）。
 
 ## 交流群
 

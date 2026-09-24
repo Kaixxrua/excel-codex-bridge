@@ -56,11 +56,8 @@ def state_dir() -> Path:
     return Path.home() / ".excel-codex-bridge"
 
 
-def catalog_payload(images: bool = False) -> dict[str, object]:
-    """Codex ``model_catalog_json`` entries for the Excel aliases.
-
-    ``images``: the bridge can hand pictures on (an image host is configured).
-    """
+def catalog_payload() -> dict[str, object]:
+    """Codex ``model_catalog_json`` entries for the Excel aliases."""
     models = []
     for priority, model_id in enumerate(CATALOG_ORDER):
         caps = excel_upstream.LOCAL_MODEL_CAPABILITIES[model_id]
@@ -104,18 +101,18 @@ def catalog_payload(images: bool = False) -> dict[str, object]:
                 "auto_compact_token_limit": auto_compact,
                 "effective_context_window_percent": 95,
                 "experimental_supported_tools": [],
-                "input_modalities": ["text", "image"] if images else ["text"],
+                "input_modalities": ["text", "image"],
                 "supports_search_tool": False,
             }
         )
     return {"models": models}
 
 
-def write_catalog(directory: Path | None = None, *, images: bool = False) -> Path:
+def write_catalog(directory: Path | None = None) -> Path:
     directory = directory or state_dir()
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / "codex-model-catalog.json"
-    content = json.dumps(catalog_payload(images), indent=2, ensure_ascii=False) + "\n"
+    content = json.dumps(catalog_payload(), indent=2, ensure_ascii=False) + "\n"
     fd, tmp = tempfile.mkstemp(dir=directory, prefix=".catalog-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
