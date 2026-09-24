@@ -18,7 +18,7 @@
 
 ## 下载
 
-- **Windows 免安装版**：`excel-codex-bridge-0.2.0-windows-x64.zip`。解压后双击 `excel-codex.exe`
+- **Windows 免安装版**：`excel-codex-bridge-0.2.1-windows-x64.zip`。解压后双击 `excel-codex.exe`
   打开 Codex CLI，双击 `excel-codex-desktop.cmd` 给桌面版用。不需要安装 Python。
 - **macOS / Linux / WSL 或从源码运行**：下载 Source code，使用 `excel-codex.sh` 或 `excel-codex.cmd`
   （需要 Python 3.10+）。自动登录只支持 Windows。
@@ -53,7 +53,7 @@
 
 ## Download
 
-- **Windows, no install**: `excel-codex-bridge-0.2.0-windows-x64.zip`. Double-click
+- **Windows, no install**: `excel-codex-bridge-0.2.1-windows-x64.zip`. Double-click
   `excel-codex.exe` for the Codex CLI, or `excel-codex-desktop.cmd` for the desktop app. Python is not required.
 - **macOS / Linux / WSL, or from source**: download the source code and use `excel-codex.sh` or
   `excel-codex.cmd` (Python 3.10+). Automatic sign-in is Windows only.

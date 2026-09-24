@@ -126,7 +126,7 @@ on demand (`--force` opens the pane even when the session is fine). To keep the 
 Excel, pass `--no-auto-signin` or set `EXCEL_BRIDGE_AUTO_SIGNIN=0`.
 
 > Opening the pane relies on Office's "open an add-in with a document" feature. It is new in
-> v0.2.0 and not yet verified on every Office build; some builds or organization policies may not
+> v0.2.1 and not yet verified on every Office build; some builds or organization policies may not
 > honor it. Then open the pane by hand (step 2) and the rest still happens automatically.
 
 ## Codex desktop app / IDE extension

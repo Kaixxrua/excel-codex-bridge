@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import os
+import signal
+import socket
+import subprocess
+import sys
 import tempfile
 import time
 import tomllib
 import unittest
+import urllib.request
 from pathlib import Path
 from unittest import mock
 
@@ -165,6 +170,68 @@ class DesktopCommandTests(unittest.TestCase):
             code = cli.main(["desktop", "--webview-dir", str(self.webview), "--no-auto-signin"])
         self.assertEqual(code, 1)
         self.assertEqual(self.config.read_text(), USER_CONFIG)
+
+
+# Loses track of the first connection the way asyncio's Windows proactor does when a
+# client resets it, then runs the CLI.
+LEAKY_DESKTOP = """\
+import sys
+from asyncio import base_events
+from excel_codex_bridge import cli
+
+detach = base_events.Server._detach
+base_events.Server._detach = lambda self: setattr(base_events.Server, "_detach", detach)
+sys.exit(cli.main(sys.argv[1:]))
+"""
+
+
+class DesktopShutdownTests(unittest.TestCase):
+    def test_ctrl_c_restores_the_config_after_a_lost_connection(self):
+        root = Path(tempfile.mkdtemp())
+        webview = write_webview_session(root / "webview", time.time() + 3 * 86400)
+        config = root / "codex-home" / "config.toml"
+        config.parent.mkdir()
+        config.write_text(USER_CONFIG)
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        env = dict(
+            os.environ,
+            CODEX_HOME=str(config.parent),
+            EXCEL_BRIDGE_HOME=str(root / "bridge-home"),
+            PYTHONPATH=str(Path(cli.__file__).resolve().parents[1]),
+        )
+        group = (
+            {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == "win32"
+            else {"start_new_session": True}
+        )
+        command = [sys.executable, "-c", LEAKY_DESKTOP, "desktop", "--webview-dir", str(webview),
+                   "--no-auto-signin", "--port", str(port)]
+        desktop = subprocess.Popen(
+            command, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **group
+        )
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            deadline = time.monotonic() + 30
+            while desktop.poll() is None and time.monotonic() < deadline:
+                try:
+                    with opener.open(f"http://127.0.0.1:{port}/healthz", timeout=2):
+                        break
+                except OSError:
+                    time.sleep(0.2)
+            self.assertIsNone(desktop.poll(), "the desktop bridge exited early")
+            self.assertTrue(desktop_config.is_enabled(config.read_text()))
+            if sys.platform == "win32":
+                os.kill(desktop.pid, signal.CTRL_BREAK_EVENT)
+            else:
+                os.killpg(desktop.pid, signal.SIGINT)
+            output, _ = desktop.communicate(timeout=30)
+        finally:
+            if desktop.poll() is None:
+                desktop.kill()
+                desktop.communicate()
+        self.assertEqual(desktop.returncode, 0, output)
+        self.assertEqual(config.read_text(), USER_CONFIG)
 
 
 if __name__ == "__main__":

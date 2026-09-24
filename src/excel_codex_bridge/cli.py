@@ -141,6 +141,9 @@ def cmd_serve(args) -> int:
     return 0
 
 
+SHUTDOWN_GRACE_SECONDS = 3
+
+
 def _run_bridge(reader: SessionReader, args, *, host: str, port: int, quiet: bool) -> None:
     import uvicorn
 
@@ -156,6 +159,11 @@ def _run_bridge(reader: SessionReader, args, *, host: str, port: int, quiet: boo
             log_level="warning",
             log_config=None,
             access_log=not quiet,
+            # On Windows, a client that resets its connection can make asyncio lose
+            # track of it (the proactor's shutdown() raises before the server is told),
+            # and uvicorn would then wait for it forever on Ctrl+C, so `desktop` never
+            # got to put config.toml back. Cap the wait.
+            timeout_graceful_shutdown=SHUTDOWN_GRACE_SECONDS,
         )
     finally:
         keeper.stop()
