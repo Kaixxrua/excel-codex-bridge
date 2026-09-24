@@ -193,16 +193,42 @@ Codex 里贴的截图、`codex -i 图片.png` 和模型用 `view_image` 看图�
 | 命令 | 作用 |
 | --- | --- |
 | `excel-codex image-host local` | 默认：从本机转交（上面的方式） |
+| `excel-codex image-host relay` | 经本项目的公共中转转交（见下） |
 | `excel-codex image-host off` | 关闭图片，模型只收文字 |
 | `excel-codex image-host set <地址> <令牌>` | 上传到你自己的图床（见下） |
 
 从源码运行或在 WSL 里需要自己装 cloudflared（Windows：`winget install Cloudflare.cloudflared`，
 macOS：`brew install cloudflared`），或者把它放进状态目录的 `bin/`。找不到 cloudflared 时图片自动关闭。
 
-**自建图床（可选）**：本机开不了隧道时，可以在一台公网服务器上运行
-`python -m excel_codex_bridge.image_host`（设置 `IMAGE_HOST_PUBLIC_URL` 和 `IMAGE_HOST_TOKENS`，
-放在 https 反向代理后面），再用 `image-host set` 指过去。图片会在服务器上保存 24 小时，
-拿到链接的人都能打开，隐私不如本机方式。
+**公共中转（可选）**：网络连不上 Cloudflare 隧道时，可以运行 `excel-codex image-host relay`，
+改用本项目作者运行的中转 `https://img.aigcnews.cn`，不用自己配置任何东西。这样图片会**离开你的电脑**，
+所以默认不开，要你自己选。中转这样处理图片：
+
+- 每张图按像素重新保存一遍，照片的拍摄地点等元数据不会留下；
+- 只给 OpenAI 的下载程序（User-Agent 含 `OpenAI`）看，浏览器和其他人打不开；
+- **最后一次使用 1 小时后删除**，不备份，也不做别的用途。保留 1 小时是因为同一轮对话里每次请求
+  OpenAI 都会重新下载一次图片，删早了模型就看不到之前的图；删晚了没必要，所以不设成几天；
+- 按来源 IP 限额（每小时 240 张、每天 300 MB），防止被当成免费图床滥用。
+
+切回默认用 `excel-codex image-host local`。介意图片出本机时，请继续用默认方式或自建图床。
+
+**自建图床（可选）**：想完全自己掌控时，可以在一台公网服务器上用 Docker 一键部署
+（服务器已装 Docker，域名已解析到它）：
+
+```bash
+git clone https://github.com/Kaixxrua/excel-codex-bridge.git
+cd excel-codex-bridge
+deploy/image-host/deploy.sh img.example.com                  # 私有图床：生成上传令牌，自动申请 https 证书
+deploy/image-host/deploy.sh img.example.com --relay          # 开放中转：不要令牌，按 IP 限额，图片重新保存
+deploy/image-host/deploy.sh img.example.com --behind-proxy   # 已有 Caddy/nginx 占着 80/443 时，只起图床并打印反代配置
+```
+
+不加 `--behind-proxy` 时脚本会一起启动 Caddy，占用 80/443 端口并自动申请证书。设置写在
+`deploy/image-host/.env`（令牌、保留时长、限额），改完或 `git pull` 后重跑同一条命令即可重建。
+脚本最后会打印在电脑上要执行的命令：私有图床是 `excel-codex image-host set <地址> <令牌>`，
+开放中转是设置 `EXCEL_BRIDGE_RELAY_URL` 后用 `relay`。私有图床的图片默认保存 24 小时，
+拿到链接的人都能打开；不用 Docker 也可以直接运行 `python -m excel_codex_bridge.image_host`
+（需要 `pip install 'excel-codex-bridge[host]'` 和上面的环境变量，见 `image_host.py` 开头的说明）。
 
 ## 限制
 
@@ -226,8 +252,9 @@ macOS：`brew install cloudflared`），或者把它放进状态目录的 `bin/`
 | --- | --- |
 | `EXCEL_BRIDGE_PROXY` | 出站代理（同 `--proxy`） |
 | `EXCEL_BRIDGE_HOME` | 状态目录：模型目录 JSON、`bridge.log`、登录用工作簿，以及让重启后仍能原样回放历史工具调用的 `tool-calls.sqlite3`（保留 60 天）。默认 `%LOCALAPPDATA%\excel-codex-bridge` 或 `~/.excel-codex-bridge` |
-| `EXCEL_BRIDGE_IMAGE_HOST` | 图片方式：`local`、`off` 或自建图床地址，优先于 `image-host` 的设置 |
+| `EXCEL_BRIDGE_IMAGE_HOST` | 图片方式：`local`、`relay`、`off` 或自建图床地址，优先于 `image-host` 的设置 |
 | `EXCEL_BRIDGE_IMAGE_TOKEN` | 自建图床的上传令牌 |
+| `EXCEL_BRIDGE_RELAY_URL` | `relay` 用的中转地址，默认 `https://img.aigcnews.cn` |
 | `EXCEL_BRIDGE_CLOUDFLARED` | 指定 cloudflared 程序的路径 |
 | `EXCEL_BRIDGE_AUTO_SIGNIN` | 设为 `0` 时不自动打开 Excel（同 `--no-auto-signin`） |
 | `CODEX_HOME` | Codex 配置目录，`desktop` 改写其中的 `config.toml`。默认 `~/.codex` |
