@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "excel-codex-bridge"
+dynamic = ["version"]
+description = "Run Codex on your own ChatGPT Excel add-in session, locally."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Unlicense" }
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
+    "httpx[socks]>=0.27,<0.29",
+    "zstandard>=0.22",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+excel-codex-bridge = "excel_codex_bridge.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "excel_codex_bridge.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

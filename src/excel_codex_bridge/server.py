@@ -1,0 +1,366 @@
+"""Local, single-user Responses endpoint backed by the ChatGPT Excel add-in.
+
+Only loopback clients are served, browser-originated requests are refused
+(DNS-rebinding / drive-by protection), and only the Excel model aliases are
+routed.  The bridge adds no credentials of its own: it forwards the session
+the signed-in add-in already cached on this machine.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import gzip
+import ipaddress
+import json
+import logging
+import os
+import zlib
+
+import httpx
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+
+from . import excel_upstream
+from . import sse
+from .excel_stream import excel_tool_stream_transform
+from .session import SessionReader
+
+log = logging.getLogger("excel_codex_bridge")
+
+MAX_BODY_BYTES = 64 * 1024 * 1024
+NON_STREAMING_ATTEMPTS = 2
+_LOOPBACK_NAMES = {"localhost"}
+_REFRESH_HINT = (
+    "Open Excel, open the ChatGPT add-in pane (sign in if asked), then retry."
+)
+
+# Kept for tests ported from ghcp_proxy.
+_excel_tool_stream_transform = excel_tool_stream_transform
+
+
+def _is_loopback_address(host: str | None) -> bool:
+    if not host:
+        return False
+    if host.lower() in _LOOPBACK_NAMES:
+        return True
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
+def _host_header_name(value: str) -> str:
+    value = value.strip()
+    if value.startswith("["):
+        return value[1 : value.find("]")] if "]" in value else value
+    return value.rsplit(":", 1)[0] if value.count(":") == 1 else value
+
+
+class LocalOnly:
+    """Pure-ASGI guard: loopback peer, loopback Host header, no browser Origin."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] not in {"http", "websocket"}:
+            await self.app(scope, receive, send)
+            return
+        client = scope.get("client")
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        reason = None
+        if not _is_loopback_address(client[0] if client else None):
+            reason = "only loopback clients are served"
+        elif not _is_loopback_address(_host_header_name(headers.get("host", ""))):
+            reason = "the Host header must name a loopback address"
+        elif "origin" in headers:
+            reason = "browser-originated requests are not accepted"
+        if reason is None:
+            await self.app(scope, receive, send)
+            return
+        if scope["type"] == "websocket":
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        response = sse.openai_error_response(403, f"Forbidden: {reason}.")
+        await response(scope, receive, send)
+
+
+def _zstd_decompress(raw: bytes) -> bytes:
+    try:
+        import zstandard
+    except ImportError as exc:  # pragma: no cover - dependency is declared
+        raise ValueError("zstd request bodies need the zstandard package") from exc
+    return zstandard.ZstdDecompressor().decompressobj().decompress(raw)
+
+
+def _decode_body(raw: bytes, content_encoding: str) -> dict:
+    encoding = content_encoding.strip().lower()
+    if encoding == "gzip" or (not encoding and raw.startswith(b"\x1f\x8b")):
+        raw = gzip.decompress(raw)
+    elif encoding == "deflate":
+        raw = zlib.decompress(raw)
+    elif encoding == "zstd" or (not encoding and raw.startswith(b"\x28\xb5\x2f\xfd")):
+        raw = _zstd_decompress(raw)
+    elif encoding not in {"", "identity"}:
+        raise ValueError(f"unsupported content-encoding {encoding!r}")
+    if len(raw) > MAX_BODY_BYTES:
+        raise ValueError("request body is too large")
+    payload = json.loads(raw) if raw else {}
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be a JSON object")
+    return payload
+
+
+def _canonical_model(model: object) -> str | None:
+    """Accept the Excel aliases, plus the same names without ``-excel``."""
+    if excel_upstream.is_excel_model(model):
+        return excel_upstream.excel_model_id(model)
+    if isinstance(model, str):
+        return excel_upstream.excel_model_id(f"{model.strip()}-excel")
+    return None
+
+
+def _proxy_url() -> str | None:
+    value = os.environ.get("EXCEL_BRIDGE_PROXY", "").strip()
+    return value or None
+
+
+def build_upstream_client() -> httpx.AsyncClient:
+    """HTTP/1.1 client; honours EXCEL_BRIDGE_PROXY, else HTTPS_PROXY/system proxy."""
+    timeout = httpx.Timeout(connect=30.0, read=600.0, write=60.0, pool=30.0)
+    proxy = _proxy_url()
+    return httpx.AsyncClient(
+        timeout=timeout,
+        limits=httpx.Limits(max_connections=8, max_keepalive_connections=4, keepalive_expiry=300.0),
+        verify=True,
+        proxy=proxy,
+        trust_env=proxy is None,
+    )
+
+
+def _upstream_error_response(upstream: httpx.Response) -> Response:
+    status = upstream.status_code
+    try:
+        payload = upstream.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        payload = None
+    message = None
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict) and isinstance(error.get("message"), str):
+            message = error["message"]
+        elif isinstance(payload.get("detail"), str):
+            message = payload["detail"]
+    if message is None:
+        message = (upstream.text or "").strip()[:2000] or f"HTTP {status}"
+    if status in {401, 403}:
+        message = f"OpenAI rejected the Excel session ({status}): {message} {_REFRESH_HINT}"
+    headers = {}
+    retry_after = upstream.headers.get("retry-after")
+    if retry_after:
+        headers["retry-after"] = retry_after
+    return sse.openai_error_response(status, message, headers=headers or None)
+
+
+class Bridge:
+    def __init__(self, reader: SessionReader, client_factory=build_upstream_client) -> None:
+        self.reader = reader
+        self._client_factory = client_factory
+        self._client: httpx.AsyncClient | None = None
+
+    @property
+    def client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = self._client_factory()
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    async def responses(self, body: dict) -> Response:
+        model_id = _canonical_model(body.get("model"))
+        if model_id is None:
+            return sse.openai_error_response(
+                400,
+                f"Model {body.get('model')!r} is not served by this bridge. "
+                f"Use one of: {', '.join(excel_upstream.MODEL_IDS)}.",
+                code="model_not_found",
+                param="model",
+            )
+        body = {**body, "model": model_id}
+        self.reader.refresh()
+        stream = bool(body.get("stream"))
+        try:
+            headers = self.reader.store.request_headers(stream=stream)
+        except RuntimeError as exc:
+            detail = f" ({self.reader.last_error})" if self.reader.last_error else ""
+            return sse.openai_error_response(401, f"{exc}{detail} {_REFRESH_HINT}")
+        upstream_body = excel_upstream.prepare_responses_body(
+            body, tools_version_id=self.reader.store.tools_version_id()
+        )
+        if upstream_body.get("stream"):
+            return await self._stream(headers, upstream_body, body)
+        return await self._non_stream(headers, upstream_body, body)
+
+    async def _stream(self, headers: dict, upstream_body: dict, source_body: dict) -> Response:
+        request = self.client.build_request(
+            "POST", excel_upstream.RESPONSES_URL, headers=headers, json=upstream_body
+        )
+        try:
+            upstream = await self.client.send(request, stream=True)
+        except httpx.RequestError as exc:
+            status, message = sse.upstream_request_error_status_and_message(exc)
+            log.warning("upstream request failed: %s", type(exc).__name__)
+            return sse.openai_error_response(status, message)
+        if upstream.status_code >= 400:
+            try:
+                await upstream.aread()
+            finally:
+                await upstream.aclose()
+            log.warning("upstream returned HTTP %s", upstream.status_code)
+            return _upstream_error_response(upstream)
+
+        transform = excel_tool_stream_transform(source_body)
+
+        async def relay():
+            try:
+                chunks = upstream.aiter_bytes()
+                if transform is not None:
+                    chunks = transform(chunks)
+                async for chunk in chunks:
+                    yield chunk
+            except httpx.TransportError as exc:
+                # Basispoints sometimes breaks the connection after the final
+                # event; if it happened earlier the client sees no
+                # response.completed and retries on its own.
+                log.warning("upstream stream ended abnormally: %s", type(exc).__name__)
+            finally:
+                await upstream.aclose()
+
+        return StreamingResponse(
+            relay(),
+            status_code=upstream.status_code,
+            media_type="text/event-stream",
+            headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+        )
+
+    async def _read_completed_payload(self, upstream: httpx.Response) -> dict | None:
+        completed: dict | None = None
+        try:
+            async for event_name, data in sse.iter_sse_messages(upstream.aiter_bytes()):
+                if not sse.is_response_completed_event(event_name, data):
+                    continue
+                try:
+                    parsed = json.loads(data or "")
+                except json.JSONDecodeError:
+                    continue
+                payload = parsed.get("response") if isinstance(parsed, dict) else None
+                if isinstance(payload, dict):
+                    completed = payload
+        except httpx.RemoteProtocolError:
+            # Malformed trailing chunk after the completed event is harmless.
+            if completed is None:
+                raise
+        return completed
+
+    async def _non_stream(self, headers: dict, upstream_body: dict, source_body: dict) -> Response:
+        model_id = excel_upstream.excel_model_id(source_body.get("model")) or excel_upstream.MODEL_ID
+        payload: dict | None = None
+        for attempt in range(NON_STREAMING_ATTEMPTS):
+            upstream = None
+            try:
+                request = self.client.build_request(
+                    "POST", excel_upstream.RESPONSES_URL, headers=headers, json=upstream_body
+                )
+                upstream = await self.client.send(request, stream=True)
+                if upstream.status_code >= 400:
+                    await upstream.aread()
+                    return _upstream_error_response(upstream)
+                if "text/event-stream" in upstream.headers.get("content-type", "").lower():
+                    payload = await self._read_completed_payload(upstream)
+                else:
+                    await upstream.aread()
+                    try:
+                        parsed = upstream.json()
+                    except json.JSONDecodeError:
+                        parsed = None
+                    payload = parsed if isinstance(parsed, dict) else None
+            except httpx.RemoteProtocolError as exc:
+                if attempt + 1 < NON_STREAMING_ATTEMPTS:
+                    continue
+                return sse.openai_error_response(*sse.upstream_request_error_status_and_message(exc))
+            except httpx.RequestError as exc:
+                return sse.openai_error_response(*sse.upstream_request_error_status_and_message(exc))
+            finally:
+                if upstream is not None:
+                    await upstream.aclose()
+            break
+
+        if not isinstance(payload, dict):
+            return sse.openai_error_response(
+                502, "Upstream response did not include a completed Responses payload"
+            )
+        translated = dict(payload)
+        translated["model"] = model_id
+        tool_call = excel_upstream.extract_client_tool_call(
+            sse.extract_response_output_text(payload) or "",
+            excel_upstream.client_tool_types(source_body),
+        )
+        if tool_call is None:
+            tool_call = excel_upstream.extract_native_client_tool_call(payload, source_body)
+        if tool_call is not None:
+            translated = excel_upstream.response_payload_with_tool_call(
+                payload, tool_call, model_id=model_id
+            )
+            sse.normalize_response_reasoning_for_client(translated)
+        return JSONResponse(content=translated)
+
+
+def create_app(reader: SessionReader | None = None, *, client_factory=build_upstream_client):
+    """Build the ASGI app (wrapped in the loopback guard)."""
+    bridge = Bridge(reader or SessionReader(), client_factory)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app):
+        yield
+        await bridge.aclose()
+
+    app = FastAPI(
+        title="excel-codex-bridge",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        lifespan=lifespan,
+    )
+    app.state.bridge = bridge
+
+    @app.get("/healthz")
+    async def healthz():
+        return {"ok": True, "session": bridge.reader.refresh()}
+
+    @app.get("/v1/models")
+    @app.get("/models")
+    async def models():
+        return {
+            "object": "list",
+            "data": [
+                {"id": model_id, "object": "model", "created": 0, "owned_by": "openai-excel"}
+                for model_id in excel_upstream.MODEL_IDS
+            ],
+        }
+
+    @app.post("/v1/responses")
+    @app.post("/responses")
+    async def responses(request: Request):
+        raw = await request.body()
+        if len(raw) > MAX_BODY_BYTES:
+            return sse.openai_error_response(413, "Request body is too large")
+        try:
+            body = _decode_body(raw, request.headers.get("content-encoding", ""))
+        except (ValueError, OSError, zlib.error, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            return sse.openai_error_response(400, f"Invalid request body: {exc}")
+        return await bridge.responses(body)
+
+    return LocalOnly(app)
