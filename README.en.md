@@ -37,24 +37,32 @@ Codex CLI ──(Responses API, 127.0.0.1)──▶ excel-codex-bridge ──(HT
 
 - Windows 10/11 with **Microsoft 365 desktop Excel** and the **ChatGPT** add-in (publisher
   OpenAI) installed and signed in at least once; your ChatGPT plan must include the add-in.
-- Python 3.10+ ([python.org](https://www.python.org/downloads/); tick *Add python.exe to PATH*).
 - Codex CLI: `npm install -g @openai/codex`.
+- Python 3.10+ only when running from source ([python.org](https://www.python.org/downloads/);
+  tick *Add python.exe to PATH*); the no-install build does not need it.
 - Network access to `bps.openai.com` (see [Proxy](#proxy)).
 
 ## Quick start (Windows)
 
-1. Download or clone this repository anywhere, e.g. `D:\tools\excel-codex-bridge`.
-2. In Excel open Home → Add-ins → **ChatGPT** and make sure the pane is signed in. You can
-   close Excel afterwards.
-3. Open cmd or PowerShell in your project folder and run:
+First open Excel → Home → Add-ins → **ChatGPT** and make sure the pane is signed in. You can
+close Excel afterwards.
 
-   ```
-   D:\tools\excel-codex-bridge\excel-codex.cmd
-   ```
+**Option 1: no-install build (recommended)**
 
-   The first run creates `.venv` next to the script and installs dependencies; later runs
-   start instantly. Double-clicking `excel-codex.cmd` also works; Codex then starts in your
-   user folder. Add the repository folder to `PATH` to type `excel-codex` anywhere.
+1. Download `excel-codex-bridge-<version>-windows-x64.zip` from
+   [Releases](https://github.com/Kaixxrua/excel-codex-bridge/releases/latest) and unzip it anywhere,
+   e.g. `D:\tools\excel-codex-bridge`.
+2. Double-click `excel-codex.exe` to open Codex in your user folder. To work on a project, run
+   `D:\tools\excel-codex-bridge\excel-codex.exe` from a terminal in that folder, or add the folder
+   to `PATH` and type `excel-codex`.
+
+The exe is not code-signed; if SmartScreen stops the first run, choose "More info → Run anyway".
+
+**Option 2: from source**
+
+Clone this repository anywhere and run its `excel-codex.cmd` from your project folder (or
+double-click it). The first run creates `.venv` next to the script and installs dependencies;
+later runs start instantly.
 
 Common invocations (everything after `--` goes to Codex unchanged):
 

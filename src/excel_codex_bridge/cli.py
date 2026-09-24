@@ -163,12 +163,19 @@ def _no_proxy_env(env: dict[str, str]) -> dict[str, str]:
 _PACKAGE_ROOT = str(Path(__file__).resolve().parent.parent)
 
 
+def _frozen() -> bool:
+    """Running from the PyInstaller build (the Windows release)."""
+    return bool(getattr(sys, "frozen", False))
+
+
 def _same_path(a: str, b: str) -> bool:
     return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
 
 
 def _bridge_env(env: dict[str, str]) -> dict[str, str]:
     """The bridge child must import this package however the launcher was started."""
+    if _frozen():
+        return env
     entries = [item for item in env.get("PYTHONPATH", "").split(os.pathsep) if item]
     if not any(_same_path(item, _PACKAGE_ROOT) for item in entries):
         entries.insert(0, _PACKAGE_ROOT)
@@ -212,8 +219,8 @@ def cmd_codex(args, codex_args: list[str]) -> int:
     port = args.port or _free_port()
 
     serve_cmd = [
-        sys.executable, "-m", "excel_codex_bridge", "serve",
-        "--port", str(port), "--log-file", str(log_file), "--exit-with-stdin",
+        *([sys.executable] if _frozen() else [sys.executable, "-m", "excel_codex_bridge"]),
+        "serve", "--port", str(port), "--log-file", str(log_file), "--exit-with-stdin",
     ]
     if args.webview_dir:
         serve_cmd += ["--webview-dir", args.webview_dir]
@@ -269,7 +276,7 @@ def _parser() -> argparse.ArgumentParser:
     )
 
     parser = argparse.ArgumentParser(
-        prog="excel-codex-bridge",
+        prog="excel-codex",
         description="Run Codex on your own ChatGPT Excel add-in session, locally.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -301,8 +308,37 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _started_by_double_click() -> bool:
+    """True when Windows opened this console just for us, i.e. from Explorer."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        processes = (ctypes.c_uint32 * 4)()
+        return ctypes.windll.kernel32.GetConsoleProcessList(processes, 4) == 1
+    except (AttributeError, OSError):
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv is None and _started_by_double_click():
+        # Explorer starts us in the install folder; keep Codex out of it, and
+        # keep the window open long enough to read an error.
+        if Path.cwd().resolve() == Path(sys.executable).resolve().parent:
+            os.chdir(Path.home())
+        code = _main(sys.argv[1:])
+        if code:
+            try:
+                input("\nPress Enter to close this window...")
+            except (EOFError, KeyboardInterrupt):
+                pass
+        return code
+    return _main(list(sys.argv[1:] if argv is None else argv))
+
+
+def _main(argv: list[str]) -> int:
+    argv = list(argv)
     known = {"codex", "serve", "status", "print-config", "-h", "--help", "--version"}
     if not argv or argv[0] not in known:
         argv = ["codex", *argv]

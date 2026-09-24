@@ -31,22 +31,28 @@ Codex CLI ──(Responses API, 127.0.0.1)──▶ excel-codex-bridge ──(HT
 
 - Windows 10/11 + **Microsoft 365 桌面版 Excel**，已安装加载项 **ChatGPT**（发布者 OpenAI）
   并在面板里登录过一次；你的 ChatGPT 套餐需要能用这个加载项。
-- Python 3.10+（[python.org](https://www.python.org/downloads/)，安装时勾选 *Add python.exe to PATH*）。
 - Codex CLI：`npm install -g @openai/codex`。
+- 只有从源码运行才需要 Python 3.10+（[python.org](https://www.python.org/downloads/)，安装时勾选 *Add python.exe to PATH*），免安装版不需要。
 - 能访问 `bps.openai.com`（需要代理见[代理](#代理)）。
 
 ## 快速开始（Windows）
 
-1. 把本仓库下载或 clone 到任意目录，例如 `D:\tools\excel-codex-bridge`。
-2. 打开 Excel → 开始 → 加载项 → **ChatGPT**，确认面板里已登录。之后 Excel 可以关掉。
-3. 在你的项目目录打开 cmd 或 PowerShell，运行：
+先打开 Excel → 开始 → 加载项 → **ChatGPT**，确认面板里已登录。之后 Excel 可以关掉。
 
-   ```
-   D:\tools\excel-codex-bridge\excel-codex.cmd
-   ```
+**方式一：免安装版（推荐）**
 
-   首次运行会在仓库目录建 `.venv` 并安装依赖，之后秒开。也可以直接**双击** `excel-codex.cmd`，
-   这时 Codex 在你的用户目录启动。把仓库目录加进 `PATH` 后，任意目录输入 `excel-codex` 即可。
+1. 从 [Releases](https://github.com/Kaixxrua/excel-codex-bridge/releases/latest) 下载
+   `excel-codex-bridge-<版本>-windows-x64.zip`，解压到任意目录，例如 `D:\tools\excel-codex-bridge`。
+2. 双击 `excel-codex.exe` 就会打开 Codex，工作目录是你的用户目录。
+   要在某个项目里用，就在项目目录打开终端运行 `D:\tools\excel-codex-bridge\excel-codex.exe`，
+   或者把解压目录加进 `PATH`，之后直接输入 `excel-codex`。
+
+exe 没有代码签名，首次运行时 SmartScreen 可能拦一下，点"更多信息 → 仍要运行"即可。
+
+**方式二：从源码运行**
+
+把本仓库 clone 到任意目录，在项目目录运行其中的 `excel-codex.cmd`（或者双击它）。
+首次运行会在仓库目录建 `.venv` 并安装依赖，之后秒开。
 
 常用写法（`--` 之后的参数原样交给 Codex）：
 

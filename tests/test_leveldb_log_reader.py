@@ -13,59 +13,17 @@ from excel_codex_bridge.excel_session_capture import (
 )
 from excel_codex_bridge.session import SessionReader
 
-from helpers import storage_payload
+from helpers import (
+    LEVELDB_BLOCK,
+    SESSION_KEY,
+    log_file,
+    storage_payload,
+    webview_db,
+    write_batch,
+)
 
-KEY = b"_https://bps.openai.com\x00\x01bps_auth_tokens"
-BLOCK = 32768
-
-
-def varint(value: int) -> bytes:
-    out = bytearray()
-    while True:
-        byte = value & 0x7F
-        value >>= 7
-        if value:
-            out.append(byte | 0x80)
-        else:
-            out.append(byte)
-            return bytes(out)
-
-
-def write_batch(puts: list[tuple[bytes, bytes]], deletes: list[bytes] = (), seq: int = 1) -> bytes:
-    body = bytearray(seq.to_bytes(8, "little") + (len(puts) + len(deletes)).to_bytes(4, "little"))
-    for key in deletes:
-        body += b"\x00" + varint(len(key)) + key
-    for key, value in puts:
-        body += b"\x01" + varint(len(key)) + key + varint(len(value)) + value
-    return bytes(body)
-
-
-def log_file(records: list[bytes]) -> bytes:
-    """Frame records as a LevelDB log, splitting across 32 KiB blocks."""
-    out = bytearray()
-    for record in records:
-        remaining = record
-        first = True
-        while True:
-            space = BLOCK - len(out) % BLOCK
-            if space < 7:
-                out += b"\x00" * space
-                space = BLOCK
-            chunk = remaining[: space - 7]
-            remaining = remaining[len(chunk):]
-            last = not remaining
-            kind = 1 if first and last else 2 if first else 4 if last else 3
-            out += b"\x00\x00\x00\x00" + len(chunk).to_bytes(2, "little") + bytes([kind]) + chunk
-            first = False
-            if last:
-                break
-    return bytes(out)
-
-
-def webview_db(root: Path) -> Path:
-    db = root / "Wef" / "EBWebView" / "Default" / "Local Storage" / "leveldb"
-    db.mkdir(parents=True)
-    return db
+KEY = SESSION_KEY
+BLOCK = LEVELDB_BLOCK
 
 
 class LevelDbLogReaderTests(unittest.TestCase):
