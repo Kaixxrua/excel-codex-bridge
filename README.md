@@ -160,3 +160,9 @@ PYTHONPATH=src .venv/bin/python -m pytest
 Excel 会话读取和 Basispoints 协议适配代码提取自
 [Nonary/ghcp_proxy](https://github.com/Nonary/ghcp_proxy)（Unlicense，基于 commit `ad23ce2`，
 原许可见 [UPSTREAM-LICENSE](UPSTREAM-LICENSE)）。本项目同样以 [Unlicense](LICENSE) 发布。
+
+## 交流群
+
+QQ 群「Vibe coding 交流」，群号 **966195257**，扫码加入：
+
+<img src="docs/qq-group.jpg" alt="QQ 群 966195257 二维码" width="240">
