@@ -14,11 +14,18 @@ call round trip and the environment Codex hands to its commands.
 ``--desktop`` runs ``<launcher> desktop`` instead and a plain ``codex exec``
 next to it, the way the desktop app picks up ``config.toml``; the user's own
 config must come back byte for byte when the desktop window stops.
+
+``--images`` also attaches a picture (``codex exec -i``).  The backend must
+only ever see it as a link, the same link every time, and fetches it from
+there the way OpenAI would.  In the default ``local`` mode the link goes
+through a stand-in for cloudflared (nothing leaves this computer); with
+``--images remote`` it goes to an image host run next to the fake backend.
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import itertools
 import json
 import os
@@ -31,14 +38,17 @@ import tempfile
 import threading
 import time
 import urllib.request
+import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import uvicorn  # noqa: E402
 from fastapi import FastAPI, Request  # noqa: E402
 from fastapi.responses import JSONResponse, StreamingResponse  # noqa: E402
 
+from excel_codex_bridge import image_host  # noqa: E402
 from helpers import write_webview_session  # noqa: E402
 
 USER_PYTHONPATH = "e2e-user-pythonpath"
@@ -56,6 +66,23 @@ PROBE = (
     f"{PYTHON} -c \"import os; print('bridge-e2e-' + str(6*7), "
     "'PP=[' + os.environ.get('PYTHONPATH', '') + ']')\""
 )
+IMAGE_TOKEN = "e2e-image-token-0123456789"
+FAKE_TUNNEL = "https://e2e-fake-tunnel.trycloudflare.com"
+# Stands in for cloudflared: notes how it was started, then prints what a quick
+# tunnel prints once it is up.
+FAKE_CLOUDFLARED = f"""
+import json, os, sys, time
+with open(os.environ["E2E_CLOUDFLARED_RECORD"], "a", encoding="utf-8") as out:
+    out.write(json.dumps({{
+        "argv": sys.argv[1:], "pid": os.getpid(), "home": os.environ.get("HOME"),
+        "tunnel_env": sorted(key for key in os.environ if key.upper().startswith("TUNNEL_")),
+    }}) + "\\n")
+print("INF Requesting new quick Tunnel on trycloudflare.com...", flush=True)
+print("INF |  {FAKE_TUNNEL}  |", flush=True)
+print("INF Registered tunnel connection connIndex=0 location=e2e protocol=http2", flush=True)
+while True:
+    time.sleep(60)
+"""
 USAGE = {
     "input_tokens": 120,
     "input_tokens_details": {"cached_tokens": 0},
@@ -67,6 +94,97 @@ USAGE = {
 
 def sse(event: str, payload: dict) -> bytes:
     return f"event: {event}\ndata: {json.dumps(payload)}\n\n".encode()
+
+
+def png(width: int = 16, height: int = 16) -> bytes:
+    """A small real PNG (Codex decodes pictures before sending them)."""
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (len(data).to_bytes(4, "big") + kind + data
+                + zlib.crc32(kind + data).to_bytes(4, "big"))
+
+    rows = b"".join(b"\x00" + b"".join(bytes((x * 15, y * 15, 128)) for x in range(width)) for y in range(height))
+    header = width.to_bytes(4, "big") + height.to_bytes(4, "big") + bytes((8, 2, 0, 0, 0))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows))
+            + chunk(b"IEND", b""))
+
+
+def image_urls(value) -> list[str]:
+    """Every input_image URL anywhere in a request body."""
+    if isinstance(value, list):
+        return [url for item in value for url in image_urls(item)]
+    if isinstance(value, dict):
+        own = [value["image_url"]] if value.get("type") == "input_image" and "image_url" in value else []
+        return own + [url for item in value.values() for url in image_urls(item)]
+    return []
+
+
+def fetch(url: str) -> bytes | None:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(url, timeout=10) as response:
+            return response.read()
+    except OSError:
+        return None
+
+
+def fake_cloudflared(root: Path) -> tuple[Path, Path]:
+    """The stand-in's launcher, and the file it records its starts in."""
+    script = root / "fake-cloudflared.py"
+    script.write_text(FAKE_CLOUDFLARED, encoding="utf-8")
+    if sys.platform == "win32":
+        launcher = root / "cloudflared.cmd"
+        launcher.write_text(f'@"{sys.executable}" "{script}" %*\r\n', encoding="utf-8")
+    else:
+        launcher = root / "cloudflared"
+        launcher.write_text(f"#!{sys.executable}\n" + FAKE_CLOUDFLARED, encoding="utf-8")
+        launcher.chmod(0o755)
+    return launcher, root / "cloudflared-starts.jsonl"
+
+
+def cloudflared_starts(record: Path) -> list[dict]:
+    if not record.exists():
+        return []
+    return [json.loads(line) for line in record.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def tunnel_origin(record: Path) -> str | None:
+    """Where the stand-in tunnel would send requests: the bridge's picture server."""
+    for start in cloudflared_starts(record):
+        argv = start["argv"]
+        if "--url" in argv:
+            return argv[argv.index("--url") + 1]
+    return None
+
+
+def alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def gone(pid: int, seconds: float = 15) -> bool:
+    deadline = time.monotonic() + seconds
+    while alive(pid):
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.2)
+    return True
 
 
 def shell_call(raw_request: str) -> tuple[str, dict]:
@@ -83,6 +201,9 @@ class FakeExcelBackend:
         self.requests: list[dict] = []
         self.unexpected: list[str] = []
         self.shell_tool = ""
+        # Like OpenAI, fetch every linked picture; `resolve` maps a link to where it is served.
+        self.resolve = None
+        self.fetched: list[bytes | None] = []
         counter = itertools.count(1)
         app = FastAPI()
 
@@ -92,6 +213,9 @@ class FakeExcelBackend:
             body = await request.json()
             self.requests.append(body)
             raw = json.dumps(body)
+            if self.resolve is not None:
+                for url in image_urls(body.get("input")):
+                    self.fetched.append(await asyncio.to_thread(fetch, self.resolve(url)))
             if n == 1:
                 name, arguments = shell_call(raw)
                 self.shell_tool = name
@@ -190,7 +314,7 @@ def run(command: list[str], *, cwd: Path, env: dict, timeout: int) -> subprocess
 
 
 def run_launcher(launcher, args, webview: Path, project: Path, env: dict) -> tuple[str, list]:
-    command = [*launcher, "--webview-dir", str(webview), "--model", args.model, "--", *CODEX_ARGS]
+    command = [*launcher, "--webview-dir", str(webview), "--model", args.model, "--", *args.codex_args]
     result = run(command, cwd=project, env=env, timeout=args.timeout)
     return result.stdout, [(result.returncode == 0, f"launcher exit code {result.returncode}")]
 
@@ -224,7 +348,7 @@ def run_desktop(launcher, args, root: Path, webview: Path, project: Path, env: d
             codex_env = dict(env)
             for key in ("NO_PROXY", "no_proxy"):
                 codex_env[key] = ",".join(filter(None, [codex_env.get(key, ""), "127.0.0.1", "localhost"]))
-            result = run([codex, *CODEX_ARGS], cwd=project, env=codex_env, timeout=args.timeout)
+            result = run([codex, *args.codex_args], cwd=project, env=codex_env, timeout=args.timeout)
             output = result.stdout
             checks.append((result.returncode == 0, f"codex exit code {result.returncode}"))
         else:
@@ -251,10 +375,17 @@ def run_desktop(launcher, args, root: Path, webview: Path, project: Path, env: d
     return output, checks
 
 
+def _desktop_log(root: Path) -> str:
+    log = root / "desktop.log"
+    return log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--model", default="gpt-5.6-sol-excel")
     parser.add_argument("--desktop", action="store_true", help="check `desktop` mode with a plain codex")
+    parser.add_argument("--images", nargs="?", const="local", choices=["local", "remote"],
+                        help="also attach a picture, passed on locally (default) or through an image host")
     parser.add_argument("--timeout", type=int, default=900, help="seconds for each long step")
     parser.add_argument("launcher", nargs=argparse.REMAINDER)
     args = parser.parse_args()
@@ -271,7 +402,7 @@ def main() -> int:
     backend = FakeExcelBackend()
     server, port = start_server(backend.app)
 
-    env = dict(os.environ)
+    env = {key: value for key, value in os.environ.items() if not key.startswith("EXCEL_BRIDGE_IMAGE_")}
     env.update(
         CODEX_HOME=str(root / "codex-home"),
         EXCEL_BRIDGE_HOME=str(root / "bridge-home"),
@@ -279,6 +410,32 @@ def main() -> int:
         PYTHONPATH=USER_PYTHONPATH,
     )
     Path(env["CODEX_HOME"]).mkdir()
+    args.codex_args = list(CODEX_ARGS)
+    picture = png()
+    record = root / "cloudflared-starts.jsonl"
+    if args.images:
+        (project / "picture.png").write_bytes(picture)
+        # -i takes every argument after it, so it goes last.
+        args.codex_args += ["-i", str(project / "picture.png")]
+    if args.images == "local":
+        cloudflared, record = fake_cloudflared(root)
+        # A user's tunnel settings must not reach the bridge's cloudflared.
+        env.update(EXCEL_BRIDGE_CLOUDFLARED=str(cloudflared), E2E_CLOUDFLARED_RECORD=str(record),
+                   TUNNEL_ORIGIN_CERT=str(root / "no-such-cert.pem"))
+        backend.resolve = lambda url: url.replace(FAKE_TUNNEL, tunnel_origin(record) or FAKE_TUNNEL, 1)
+    elif args.images == "remote":
+        backend.resolve = lambda url: url
+        host_port = free_port()
+        settings = image_host.Settings(
+            public_url=f"http://127.0.0.1:{host_port}", tokens=(IMAGE_TOKEN,), directory=root / "image-host"
+        )
+        host_server = uvicorn.Server(uvicorn.Config(
+            image_host.create_app(settings), host="127.0.0.1", port=host_port, log_level="warning"
+        ))
+        threading.Thread(target=host_server.run, daemon=True).start()
+        while not host_server.started:
+            time.sleep(0.05)
+        env.update(EXCEL_BRIDGE_IMAGE_HOST=settings.public_url, EXCEL_BRIDGE_IMAGE_TOKEN=IMAGE_TOKEN)
     started = time.monotonic()
     if args.desktop:
         output, checks = run_desktop(launcher, args, root, webview, project, env)
@@ -299,6 +456,35 @@ def main() -> int:
          "Codex's commands saw a different PYTHONPATH"),
         (not backend.unexpected, f"unexpected upstream paths: {backend.unexpected}"),
     ]
+    if args.images:
+        urls = [image_urls(body.get("input")) for body in backend.requests]
+        hosted = sorted({url for request_urls in urls for url in request_urls})
+        base = FAKE_TUNNEL if args.images == "local" else env["EXCEL_BRIDGE_IMAGE_HOST"]
+        announced = "Pictures: kept in memory" if args.images == "local" else "Pictures: uploaded to"
+        checks += [
+            (announced in output + _desktop_log(root), f"the bridge did not announce {announced!r}"),
+            (not any("data:" in url for request_urls in urls for url in request_urls),
+             "an inline data: picture reached the backend"),
+            (bool(urls) and all(len(request_urls) == 1 for request_urls in urls),
+             f"expected the picture once in every request, got {[len(u) for u in urls]}"),
+            (len(hosted) == 1 and hosted[0].startswith(base + "/i/"),
+             f"expected one picture link under {base}, got {hosted}"),
+            (len(backend.fetched) == len(backend.requests) and all(data == picture for data in backend.fetched),
+             f"the backend could not fetch the picture: {[len(data or b'') for data in backend.fetched]}"),
+        ]
+    if args.images == "local":
+        starts = cloudflared_starts(record)
+        origin = tunnel_origin(record) or ""
+        checks += [
+            (len(starts) == 1, f"expected cloudflared to start once, got {len(starts)}"),
+            (bool(starts) and starts[0]["argv"][:4] == ["tunnel", "--no-autoupdate", "--protocol", "http2"]
+             and origin.startswith("http://127.0.0.1:"), f"cloudflared was started as {starts[:1]}"),
+            (bool(starts) and not starts[0]["tunnel_env"], "TUNNEL_* settings reached cloudflared"),
+            (bool(starts) and Path(starts[0]["home"] or "").is_relative_to(Path(env["EXCEL_BRIDGE_HOME"])),
+             "cloudflared did not get its own home"),
+            (bool(starts) and gone(starts[0]["pid"]), "cloudflared kept running after the bridge stopped"),
+            (fetch(origin + "/") is None, "the picture server outlived the bridge"),
+        ]
     failures = [message for ok, message in checks if not ok]
 
     print(output)

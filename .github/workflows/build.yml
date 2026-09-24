@@ -48,6 +48,12 @@ jobs:
         run: python tests/e2e/run_e2e.py -- ./excel-codex.sh
       - name: e2e (excel-codex.sh desktop)
         run: python tests/e2e/run_e2e.py --desktop -- ./excel-codex.sh
+      - name: e2e (excel-codex.sh, pictures)
+        run: python tests/e2e/run_e2e.py --images -- ./excel-codex.sh
+      - name: e2e (excel-codex.sh desktop, pictures)
+        run: python tests/e2e/run_e2e.py --desktop --images -- ./excel-codex.sh
+      - name: e2e (excel-codex.sh, pictures through an image host)
+        run: python tests/e2e/run_e2e.py --images remote -- ./excel-codex.sh
 
   windows:
     needs: test
@@ -70,12 +76,22 @@ jobs:
           --collect-submodules uvicorn --hidden-import anyio._backends._asyncio
           packaging/entry.py
 
+      - name: Add cloudflared
+        run: |
+          python packaging/cloudflared.py windows-amd64 dist/excel-codex
+          dist/excel-codex/cloudflared.exe --version
+          dist/excel-codex/excel-codex.exe image-host
+
       - name: e2e (excel-codex.exe)
         run: python tests/e2e/run_e2e.py -- dist/excel-codex/excel-codex.exe
       - name: e2e (excel-codex.exe, gpt-6-astra-excel)
         run: python tests/e2e/run_e2e.py --model gpt-6-astra-excel -- dist/excel-codex/excel-codex.exe
       - name: e2e (excel-codex.exe desktop)
         run: python tests/e2e/run_e2e.py --desktop -- dist/excel-codex/excel-codex.exe
+      - name: e2e (excel-codex.exe, pictures)
+        run: python tests/e2e/run_e2e.py --images -- dist/excel-codex/excel-codex.exe
+      - name: e2e (excel-codex.exe desktop, pictures)
+        run: python tests/e2e/run_e2e.py --desktop --images -- dist/excel-codex/excel-codex.exe
       - name: e2e (excel-codex.cmd)
         run: python tests/e2e/run_e2e.py -- excel-codex.cmd
 
@@ -110,8 +126,10 @@ jobs:
         include:
           - runner: macos-15
             arch: arm64
+            cloudflared: darwin-arm64
           - runner: macos-15-intel
             arch: x64
+            cloudflared: darwin-amd64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -131,10 +149,20 @@ jobs:
           --collect-submodules uvicorn --hidden-import anyio._backends._asyncio
           packaging/entry.py
 
+      - name: Add cloudflared
+        run: |
+          python packaging/cloudflared.py ${{ matrix.cloudflared }} dist/excel-codex
+          dist/excel-codex/cloudflared --version
+          dist/excel-codex/excel-codex image-host
+
       - name: e2e (excel-codex)
         run: python tests/e2e/run_e2e.py -- dist/excel-codex/excel-codex
       - name: e2e (excel-codex desktop)
         run: python tests/e2e/run_e2e.py --desktop -- dist/excel-codex/excel-codex
+      - name: e2e (excel-codex, pictures)
+        run: python tests/e2e/run_e2e.py --images -- dist/excel-codex/excel-codex
+      - name: e2e (excel-codex desktop, pictures)
+        run: python tests/e2e/run_e2e.py --desktop --images -- dist/excel-codex/excel-codex
 
       - name: Package
         run: |

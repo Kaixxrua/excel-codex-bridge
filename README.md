@@ -26,6 +26,8 @@ Codex CLI ──(Responses API, 127.0.0.1)──▶ excel-codex-bridge ──(HT
   以及任何带 `Origin` 头的浏览器请求。`serve` 拒绝绑定 `0.0.0.0`。
 - **工具调用**：Excel 后端不接受客户端自带工具。桥接把 Codex 的工具（shell、apply_patch…）
   写进提示词，模型通过后端原生的 `run_officejs` 回传调用，桥接再还原成 Codex 的工具调用。
+- **图片**：后端只收 OpenAI 能下载的图片链接，桥接默认把图片留在本机内存里，
+  通过一条临时隧道只让 OpenAI 短时间取走，见[图片](#图片)。
 - **不乱改你的 Codex 配置**：命令行启动器用 `-c` 参数临时指定 provider 和模型目录，
   `~/.codex/config.toml` 保持原样。只有[桌面版模式](#在-codex-桌面版--ide-插件中使用)会改它，
   窗口关闭即按原样恢复，并留有备份。
@@ -171,9 +173,39 @@ TLS 证书校验始终开启。Codex 到桥接走 `127.0.0.1`，启动器会自�
 在 Windows 上还会在剩余不到 24 小时时[自动打开面板续期](#自动登录windows)，**不用重启**桥接或 Codex。
 `excel-codex status` 可查看剩余时间。
 
+## 图片
+
+Codex 里贴的截图、`codex -i 图片.png` 和模型用 `view_image` 看图都能用。Excel 后端只接受 OpenAI
+能下载的图片链接，不收直接内嵌在请求里的图片，所以桥接默认这样转交：
+
+- 图片只放在桥接进程的**内存**里，不写盘，桥接退出就没了；
+- 第一次发图时，桥接用免安装版自带的 [cloudflared](https://github.com/cloudflare/cloudflared)
+  开一条临时的 Cloudflare 隧道（`https://<随机词>.trycloudflare.com`，不需要账号）；
+- 每张图的链接名随机、猜不到，只在**带着这张图的请求发出后 5 分钟内**能下载；
+  隧道那头除了这些图什么也访问不到。
+
+图片经 Cloudflare 的网络送到 OpenAI，不会上传到别的地方。开隧道要几秒钟；隧道连接不走
+`--proxy`，网络挡住了 Cloudflare 隧道（出站 7844 端口）时用不了。隧道开不起来或 OpenAI
+下载失败时，桥接会把图片换成一句说明再发送，对话不会中断，原因写在窗口或 `bridge.log` 里。
+
+`excel-codex image-host` 查看当前方式，也可以切换（改完重启 `excel-codex`；桌面版模式还要重启 Codex 桌面版）：
+
+| 命令 | 作用 |
+| --- | --- |
+| `excel-codex image-host local` | 默认：从本机转交（上面的方式） |
+| `excel-codex image-host off` | 关闭图片，模型只收文字 |
+| `excel-codex image-host set <地址> <令牌>` | 上传到你自己的图床（见下） |
+
+从源码运行或在 WSL 里需要自己装 cloudflared（Windows：`winget install Cloudflare.cloudflared`，
+macOS：`brew install cloudflared`），或者把它放进状态目录的 `bin/`。找不到 cloudflared 时图片自动关闭。
+
+**自建图床（可选）**：本机开不了隧道时，可以在一台公网服务器上运行
+`python -m excel_codex_bridge.image_host`（设置 `IMAGE_HOST_PUBLIC_URL` 和 `IMAGE_HOST_TOKENS`，
+放在 https 反向代理后面），再用 `image-host set` 指过去。图片会在服务器上保存 24 小时，
+拿到链接的人都能打开，隐私不如本机方式。
+
 ## 限制
 
-- 只支持文本输入，不能贴图片。
 - 不支持并行工具调用，工具一次调一个。
 - 只实现 Responses API，没有 `/responses/compact` 端点。
 - Excel 后端会给每个请求加上约 2.2 万 token 的固定前缀，大部分命中缓存；额度按你的 ChatGPT 套餐计算。
@@ -193,7 +225,10 @@ TLS 证书校验始终开启。Codex 到桥接走 `127.0.0.1`，启动器会自�
 | 变量 | 作用 |
 | --- | --- |
 | `EXCEL_BRIDGE_PROXY` | 出站代理（同 `--proxy`） |
-| `EXCEL_BRIDGE_HOME` | 状态目录：模型目录 JSON、`bridge.log` 和登录用工作簿。默认 `%LOCALAPPDATA%\excel-codex-bridge` 或 `~/.excel-codex-bridge` |
+| `EXCEL_BRIDGE_HOME` | 状态目录：模型目录 JSON、`bridge.log`、登录用工作簿，以及让重启后仍能原样回放历史工具调用的 `tool-calls.sqlite3`（保留 60 天）。默认 `%LOCALAPPDATA%\excel-codex-bridge` 或 `~/.excel-codex-bridge` |
+| `EXCEL_BRIDGE_IMAGE_HOST` | 图片方式：`local`、`off` 或自建图床地址，优先于 `image-host` 的设置 |
+| `EXCEL_BRIDGE_IMAGE_TOKEN` | 自建图床的上传令牌 |
+| `EXCEL_BRIDGE_CLOUDFLARED` | 指定 cloudflared 程序的路径 |
 | `EXCEL_BRIDGE_AUTO_SIGNIN` | 设为 `0` 时不自动打开 Excel（同 `--no-auto-signin`） |
 | `CODEX_HOME` | Codex 配置目录，`desktop` 改写其中的 `config.toml`。默认 `~/.codex` |
 | `GHCP_EXCEL_WEBVIEW2_DATA_DIR` | Windows WebView2 数据根目录（同 `--webview-dir`） |
@@ -216,6 +251,8 @@ PYTHONPATH=src .venv/bin/python -m pytest
 Excel 会话读取和 Basispoints 协议适配代码提取自
 [Nonary/ghcp_proxy](https://github.com/Nonary/ghcp_proxy)（Unlicense，基于 commit `ad23ce2`，
 原许可见 [UPSTREAM-LICENSE](UPSTREAM-LICENSE)）。本项目同样以 [Unlicense](LICENSE) 发布。
+免安装版附带 Cloudflare 的 [cloudflared](https://github.com/cloudflare/cloudflared) 用于转交图片，
+它以 Apache License 2.0 发布（包内 `CLOUDFLARED-LICENSE`）。
 
 ## 交流群
 

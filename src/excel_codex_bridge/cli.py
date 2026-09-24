@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as _dt
 import json
 import logging
@@ -18,7 +19,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from . import __version__, codex_config, desktop_config, excel_signin, excel_upstream
+from . import __version__, codex_config, desktop_config, excel_signin, excel_upstream, images
 from .session import SessionReader
 
 
@@ -54,6 +55,15 @@ def _reader(args) -> SessionReader:
 def _apply_proxy(args) -> None:
     if getattr(args, "proxy", None):
         os.environ["EXCEL_BRIDGE_PROXY"] = args.proxy
+
+
+def _write_catalog(directory: Path | None = None) -> Path:
+    """The model catalog; it offers pictures to Codex only when they can be passed on."""
+    return codex_config.write_catalog(directory, images=images.pictures_available(images.load_setting()))
+
+
+def _pictures_line() -> str:
+    return images.describe(images.load_setting())
 
 
 # ─── automatic sign-in through Excel ──────────────────────────────────────────
@@ -112,6 +122,11 @@ def _exit_when_stdin_closes() -> None:
                 pass
         except (OSError, ValueError):
             pass
+        # os._exit skips the normal shutdown, which would stop cloudflared.
+        from . import local_host
+
+        with contextlib.suppress(Exception):
+            local_host.stop_all()
         os._exit(0)
 
     threading.Thread(target=wait, name="parent-watchdog", daemon=True).start()
@@ -136,6 +151,7 @@ def cmd_serve(args) -> int:
     if not args.log_file:
         _, message = _describe_session(reader.refresh(force=True))
         _print(message)
+        _print(_pictures_line())
         _print(f"Listening on {codex_config.base_url(args.port)}  (Ctrl+C to stop)")
     _run_bridge(reader, args, host=args.host, port=args.port, quiet=bool(args.log_file))
     return 0
@@ -203,13 +219,77 @@ def cmd_login(args) -> int:
 
 
 def cmd_print_config(args) -> int:
-    catalog = codex_config.write_catalog()
+    catalog = _write_catalog()
     _print(
         "# Put the three top-level keys ABOVE the first [table] of ~/.codex/config.toml,\n"
         "# and the [model_providers.excel-bridge] table anywhere below.\n"
     )
     _print(codex_config.config_snippet(args.port, catalog, args.model))
     return 0
+
+
+# ─── image host ───────────────────────────────────────────────────────────────
+
+_LOCAL_HELP = """\
+  Pictures stay in memory on this computer. When a request contains one, it can be
+  fetched for a few minutes by an unguessable link through a temporary Cloudflare
+  tunnel, because OpenAI only takes pictures as links. Nothing is written to disk
+  or uploaded anywhere else, and it all goes away when the bridge stops."""
+
+_NO_CLOUDFLARED = """\
+  cloudflared was not found, so pictures are off. The release packages include it;
+  otherwise install it (Windows: winget install Cloudflare.cloudflared,
+  macOS: brew install cloudflared) or put it in {bin_dir}."""
+
+
+def cmd_image_host(args) -> int:
+    if args.action in {"local", "off"}:
+        path = images.save_setting(images.Setting(args.action))
+        _print("Pictures are off; Codex sends the model text only." if args.action == "off"
+               else "Pictures are passed on from this computer.")
+        if os.environ.get(images.ENV_HOST):
+            _print(f"  Note: {images.ENV_HOST} is set in this environment and takes precedence over {path}.")
+        _print("  Restart `excel-codex` (or `excel-codex desktop` and the Codex app) to apply it.")
+        return 0
+    if args.action == "set":
+        if not args.url or not args.token:
+            _print("Usage: excel-codex image-host set <url> <token>")
+            return 2
+        if not args.url.strip().startswith(("https://", "http://")):
+            _print("The address must start with https://")
+            return 2
+        setting = images.Setting(images.REMOTE, images.clean_url(args.url), args.token.strip())
+        ok, message = images.check(setting)
+        _print(message)
+        if not ok:
+            _print("Nothing was saved.")
+            return 1
+        path = images.save_setting(setting)
+        _print(f"Saved to {path}.")
+        _print("  Restart `excel-codex` (or `excel-codex desktop` and the Codex app) to use it.")
+        return 0
+
+    setting = images.load_setting()
+    source = "" if setting.source == "default" else f"  (set in {setting.source})"
+    if setting.mode == images.OFF:
+        _print(f"Pictures: off{source}. `excel-codex image-host local` turns them on.")
+        return 0
+    if setting.mode == images.LOCAL:
+        binary = images.cloudflared_path()
+        _print(f"Pictures: from this computer{source}.")
+        _print(_LOCAL_HELP)
+        if binary is None:
+            _print(_NO_CLOUDFLARED.format(bin_dir=codex_config.state_dir() / "bin"))
+            return 1
+        _print(f"  cloudflared: {binary}")
+        _print("  `excel-codex image-host off` turns pictures off.")
+        return 0
+    _print(f"Pictures: uploaded to {setting.url}{source}.")
+    ok, message = images.check(setting)
+    _print(f"  {message}")
+    _print("  Anyone with a picture's link can open it until it expires. "
+           "`excel-codex image-host local` keeps pictures on this computer instead.")
+    return 0 if ok else 1
 
 
 # ─── codex launcher ───────────────────────────────────────────────────────────
@@ -298,7 +378,7 @@ def cmd_codex(args, codex_args: list[str]) -> int:
 
     home = codex_config.state_dir()
     home.mkdir(parents=True, exist_ok=True)
-    catalog = codex_config.write_catalog(home)
+    catalog = _write_catalog(home)
     log_file = home / "bridge.log"
     port = args.port or _free_port()
 
@@ -324,6 +404,7 @@ def cmd_codex(args, codex_args: list[str]) -> int:
                 _print(f"The bridge did not start; see {log_file}")
                 return 1
             time.sleep(0.2)
+        _print(_pictures_line())
         _print(f"Bridge ready on {codex_config.base_url(port)} (log: {log_file}). Starting Codex...")
 
         command = codex_config.codex_command(
@@ -425,7 +506,7 @@ def cmd_desktop(args) -> int:
             "  -> Close it, or pass --port."
         )
         return 1
-    catalog = codex_config.write_catalog()
+    catalog = _write_catalog()
     try:
         backup = desktop_config.enable_file(config, port=args.port, catalog=catalog, model=args.model)
     except (desktop_config.ConfigError, OSError, UnicodeError) as exc:
@@ -444,6 +525,7 @@ def cmd_desktop(args) -> int:
         _print("  Keep this window open. `excel-codex desktop --off` puts your config back.")
     else:
         _print("  Keep this window open; closing it or pressing Ctrl+C puts your config back.")
+    _print(_pictures_line())
     _print(f"Listening on {codex_config.base_url(args.port)}")
     try:
         _run_bridge(reader, args, host="127.0.0.1", port=args.port, quiet=False)
@@ -525,6 +607,17 @@ def _parser() -> argparse.ArgumentParser:
     )
     login.add_argument("--force", action="store_true", help="open the pane even if the session is fine")
 
+    image = sub.add_parser(
+        "image-host",
+        help="how pictures reach the model: from this computer (default), your own image host, or off",
+    )
+    image.add_argument(
+        "action", nargs="?", choices=["show", "local", "set", "off"], default="show",
+        help="local: serve pictures from this computer (default); set: use your own image host; off: text only",
+    )
+    image.add_argument("url", nargs="?", help="for set: the image host's address, e.g. https://img.example.com")
+    image.add_argument("token", nargs="?", help="for set: your upload token for it")
+
     config = sub.add_parser("print-config", help="print a config.toml snippet for `serve` mode")
     config.add_argument("--port", type=int, default=codex_config.DEFAULT_PORT)
     config.add_argument("--model", default=codex_config.DEFAULT_MODEL)
@@ -562,7 +655,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def _main(argv: list[str]) -> int:
     argv = list(argv)
-    known = {"codex", "desktop", "serve", "status", "login", "print-config", "-h", "--help", "--version"}
+    known = {"codex", "desktop", "serve", "status", "login", "image-host", "print-config", "-h", "--help", "--version"}
     if not argv or argv[0] not in known:
         argv = ["codex", *argv]
     codex_args: list[str] = []
@@ -578,6 +671,8 @@ def _main(argv: list[str]) -> int:
         return cmd_login(args)
     if args.command == "desktop":
         return cmd_desktop(args)
+    if args.command == "image-host":
+        return cmd_image_host(args)
     if args.command == "print-config":
         return cmd_print_config(args)
     return cmd_codex(args, codex_args)

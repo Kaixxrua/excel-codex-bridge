@@ -8,6 +8,7 @@ the signed-in add-in already cached on this machine.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import gzip
 import ipaddress
@@ -21,6 +22,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from . import excel_upstream
+from . import images
 from . import sse
 from .excel_stream import excel_tool_stream_transform
 from .session import SessionReader
@@ -29,6 +31,8 @@ log = logging.getLogger("excel_codex_bridge")
 
 MAX_BODY_BYTES = 64 * 1024 * 1024
 NON_STREAMING_ATTEMPTS = 2
+# Upstream answers when it cannot use a picture link; the request is then sent again without them.
+PICTURE_RETRY_STATUSES = {400, 422}
 _LOOPBACK_NAMES = {"localhost"}
 _REFRESH_HINT = (
     "Open Excel, open the ChatGPT add-in pane (sign in if asked), then retry."
@@ -162,11 +166,24 @@ def _upstream_error_response(upstream: httpx.Response) -> Response:
     return sse.openai_error_response(status, message, headers=headers or None)
 
 
+def _error_text(response: Response) -> str:
+    try:
+        return str(json.loads(bytes(response.body))["error"]["message"])[:300]
+    except (AttributeError, ValueError, KeyError, TypeError):
+        return "no details"
+
+
 class Bridge:
-    def __init__(self, reader: SessionReader, client_factory=build_upstream_client) -> None:
+    def __init__(
+        self,
+        reader: SessionReader,
+        client_factory=build_upstream_client,
+        uploader: images.ImageUploader | None = None,
+    ) -> None:
         self.reader = reader
         self._client_factory = client_factory
         self._client: httpx.AsyncClient | None = None
+        self.images = uploader or images.ImageUploader()
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -175,6 +192,7 @@ class Bridge:
         return self._client
 
     async def aclose(self) -> None:
+        await self.images.aclose()
         if self._client is not None:
             await self._client.aclose()
             self._client = None
@@ -197,8 +215,32 @@ class Bridge:
         except RuntimeError as exc:
             detail = f" ({self.reader.last_error})" if self.reader.last_error else ""
             return sse.openai_error_response(401, f"{exc}{detail} {_REFRESH_HINT}")
+        # The backend takes pictures only as links it can fetch, never inline.
+        linked_body, linked = await self.images.rewrite(body)
+        response = await self._send(headers, linked_body, body)
+        delay = self.images.retry_delay() if linked else 0.0
+        if delay and response.status_code in PICTURE_RETRY_STATUSES:
+            log.info(
+                "the request with picture links was refused (HTTP %s: %s); the link is new, retrying in %.0fs",
+                response.status_code, _error_text(response), delay,
+            )
+            await asyncio.sleep(delay)
+            response = await self._send(headers, linked_body, body)
+        if linked and response.status_code in PICTURE_RETRY_STATUSES:
+            log.warning(
+                "the request with picture links was refused (HTTP %s: %s); sending it without the pictures",
+                response.status_code, _error_text(response),
+            )
+            plain_body, _ = await self.images.rewrite(body, links=False)
+            response = await self._send(headers, plain_body, body)
+        return response
+
+    async def _send(self, headers: dict, body: dict, original: dict) -> Response:
         upstream_body = excel_upstream.prepare_responses_body(
-            body, tools_version_id=self.reader.store.tools_version_id()
+            body,
+            tools_version_id=self.reader.store.tools_version_id(),
+            # Turn identity must not depend on how pictures were passed on.
+            identity_input=original.get("input"),
         )
         if upstream_body.get("stream"):
             return await self._stream(headers, upstream_body, body)
@@ -318,9 +360,14 @@ class Bridge:
         return JSONResponse(content=translated)
 
 
-def create_app(reader: SessionReader | None = None, *, client_factory=build_upstream_client):
+def create_app(
+    reader: SessionReader | None = None,
+    *,
+    client_factory=build_upstream_client,
+    uploader: images.ImageUploader | None = None,
+):
     """Build the ASGI app (wrapped in the loopback guard)."""
-    bridge = Bridge(reader or SessionReader(), client_factory)
+    bridge = Bridge(reader or SessionReader(), client_factory, uploader or images.build_uploader())
 
     @contextlib.asynccontextmanager
     async def lifespan(_app):

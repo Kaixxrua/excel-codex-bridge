@@ -30,6 +30,9 @@ Codex CLI ──(Responses API, 127.0.0.1)──▶ excel-codex-bridge ──(HT
 - **Tool calls.** The Excel backend rejects client-defined tools, so the bridge describes
   Codex's tools (shell, apply_patch, …) in the prompt; the model calls them through the
   backend's native `run_officejs`, and the bridge turns those back into Codex tool calls.
+- **Pictures.** The backend only takes pictures as links OpenAI can fetch. By default the bridge
+  keeps them in memory on your computer and lets OpenAI fetch them briefly through a temporary
+  tunnel; see [Pictures](#pictures).
 - **Your Codex config is left alone.** The CLI launcher passes the provider and model catalog as
   `-c` overrides, so `~/.codex/config.toml` is untouched. Only [desktop mode](#codex-desktop-app--ide-extension)
   edits it, restores it exactly when its window closes, and keeps a backup.
@@ -197,9 +200,47 @@ the local cache when it has expired or is about to; on Windows it also
 [refreshes it through Excel](#automatic-sign-in-windows) when less than 24 hours are left. **No
 restart** of the bridge or Codex is needed. `excel-codex status` shows the time left.
 
+## Pictures
+
+Screenshots pasted into Codex, `codex -i picture.png` and the model's `view_image` all work. The
+Excel backend only takes pictures as links that OpenAI can fetch, never inline, so by default the
+bridge passes them on like this:
+
+- pictures are kept only in the bridge's **memory**: nothing is written to disk, and they are gone
+  when the bridge stops;
+- with the first picture, the bridge opens a temporary Cloudflare tunnel
+  (`https://<random-words>.trycloudflare.com`, no account needed) with the
+  [cloudflared](https://github.com/cloudflare/cloudflared) that ships in the release packages;
+- each picture's link has a random, unguessable name and can be fetched only **for 5 minutes after
+  a request containing it is sent**; nothing else is reachable through the tunnel.
+
+Pictures travel to OpenAI through Cloudflare's network and are not uploaded anywhere else. Opening
+the tunnel takes a few seconds. The tunnel does not use `--proxy`, so it cannot work on a network
+that blocks Cloudflare tunnels (outbound port 7844). If the tunnel cannot open or OpenAI cannot
+fetch a picture, the bridge replaces it with a short note and sends the request anyway; the reason
+is in the window or `bridge.log`.
+
+`excel-codex image-host` shows the current setting, and switches it (restart `excel-codex`
+afterwards; in desktop mode, the Codex app as well):
+
+| Command | Effect |
+| --- | --- |
+| `excel-codex image-host local` | Default: pass pictures on from this computer (as above) |
+| `excel-codex image-host off` | Turn pictures off; the model gets text only |
+| `excel-codex image-host set <url> <token>` | Upload to your own image host (below) |
+
+When running from source or in WSL, install cloudflared yourself (Windows:
+`winget install Cloudflare.cloudflared`, macOS: `brew install cloudflared`) or put it in the
+state folder's `bin/`. Without cloudflared, pictures are off.
+
+**Your own image host (optional).** If the tunnel cannot open where you are, run
+`python -m excel_codex_bridge.image_host` on a public server (set `IMAGE_HOST_PUBLIC_URL` and
+`IMAGE_HOST_TOKENS`, behind an https reverse proxy) and point the bridge at it with
+`image-host set`. Pictures are then kept on that server for 24 hours and anyone with a link can
+open them, which is less private than the default.
+
 ## Limitations
 
-- Text input only; no images.
 - No parallel tool calls; one tool at a time.
 - Responses API only; there is no `/responses/compact` endpoint.
 - The Excel backend adds a fixed prefix of about 22k tokens to every request (mostly served from
@@ -222,7 +263,10 @@ restart** of the bridge or Codex is needed. `excel-codex status` shows the time 
 | Variable | Purpose |
 | --- | --- |
 | `EXCEL_BRIDGE_PROXY` | Outbound proxy (same as `--proxy`) |
-| `EXCEL_BRIDGE_HOME` | State folder for the model catalog JSON, `bridge.log` and the sign-in workbook. Default `%LOCALAPPDATA%\excel-codex-bridge` or `~/.excel-codex-bridge` |
+| `EXCEL_BRIDGE_HOME` | State folder for the model catalog JSON, `bridge.log`, the sign-in workbook, and `tool-calls.sqlite3`, which lets earlier tool calls replay exactly after a restart (kept 60 days). Default `%LOCALAPPDATA%\excel-codex-bridge` or `~/.excel-codex-bridge` |
+| `EXCEL_BRIDGE_IMAGE_HOST` | How pictures are passed on: `local`, `off` or your image host's URL; overrides `image-host` |
+| `EXCEL_BRIDGE_IMAGE_TOKEN` | Upload token for your own image host |
+| `EXCEL_BRIDGE_CLOUDFLARED` | Path to the cloudflared binary |
 | `EXCEL_BRIDGE_AUTO_SIGNIN` | `0` keeps the tool from opening Excel (same as `--no-auto-signin`) |
 | `CODEX_HOME` | Codex config folder whose `config.toml` `desktop` edits. Default `~/.codex` |
 | `GHCP_EXCEL_WEBVIEW2_DATA_DIR` | Windows WebView2 data root (same as `--webview-dir`) |
@@ -245,4 +289,6 @@ PYTHONPATH=src .venv/bin/python -m pytest
 The Excel session reader and the Basispoints protocol adapter are extracted from
 [Nonary/ghcp_proxy](https://github.com/Nonary/ghcp_proxy) (Unlicense, based on commit `ad23ce2`;
 original license in [UPSTREAM-LICENSE](UPSTREAM-LICENSE)). This project is released under the
-[Unlicense](LICENSE) as well.
+[Unlicense](LICENSE) as well. The release packages include Cloudflare's
+[cloudflared](https://github.com/cloudflare/cloudflared) to pass pictures on; it is released under
+the Apache License 2.0 (`CLOUDFLARED-LICENSE` in the package).
