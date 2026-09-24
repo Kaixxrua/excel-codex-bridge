@@ -4,9 +4,10 @@
 
 > **非官方项目**，与 OpenAI、Microsoft 无任何关联，也未获其认可。使用前请先读[风险与免责声明](#风险与免责声明)。
 
-用你**自己电脑上**已登录的 ChatGPT Excel 加载项会话来跑 [Codex CLI](https://github.com/openai/codex)：
-双击或一条命令，本地桥接和 Codex 一起启动，退出 Codex 时桥接自动关闭。
-不代你登录，不监听本机以外的地址，会话只在内存里，只发往 OpenAI。
+用你**自己电脑上**的 ChatGPT Excel 加载项会话来跑 [Codex CLI](https://github.com/openai/codex)
+和 Codex 桌面版：双击或一条命令，本地桥接和 Codex 一起启动，退出时桥接自动关闭。
+需要登录时自动替你打开 Excel 的 ChatGPT 面板，登录由加载项自己完成；
+不监听本机以外的地址，会话只在内存里，只发往 OpenAI。
 
 ## 工作原理
 
@@ -16,28 +17,29 @@ Codex CLI ──(Responses API, 127.0.0.1)──▶ excel-codex-bridge ──(HT
                               只读 Excel 加载项本地缓存的登录态（不落盘）
 ```
 
-- **不做任何登录**：不实现 OAuth，不碰账号密码。登录只在 Excel 的 ChatGPT 面板里完成，
-  本工具只读取加载项在本机 WebView2 存储里缓存的那份会话（`bps_auth_tokens`）。
+- **自己不做登录**：不实现 OAuth，不碰账号密码。登录只在 Excel 的 ChatGPT 面板里完成
+  （需要时本工具会[自动打开这个面板](#自动登录windows)），本工具只读取加载项在本机 WebView2
+  存储里缓存的那份会话（`bps_auth_tokens`）。
 - **token 只在内存里**：不写盘、不上传，只随请求发往 `bps.openai.com`；日志只有请求行和错误类型，
   不含提示词和 token。
 - **只给本机用**：只监听回环地址；拒绝非回环来源、非回环 `Host`（防 DNS rebinding）
   以及任何带 `Origin` 头的浏览器请求。`serve` 拒绝绑定 `0.0.0.0`。
 - **工具调用**：Excel 后端不接受客户端自带工具。桥接把 Codex 的工具（shell、apply_patch…）
   写进提示词，模型通过后端原生的 `run_officejs` 回传调用，桥接再还原成 Codex 的工具调用。
-- **不改你的 Codex 配置**：启动器用 `-c` 参数临时指定 provider 和模型目录，
-  `~/.codex/config.toml` 保持原样，平时直接运行 `codex` 不受影响。
+- **不乱改你的 Codex 配置**：命令行启动器用 `-c` 参数临时指定 provider 和模型目录，
+  `~/.codex/config.toml` 保持原样。只有[桌面版模式](#在-codex-桌面版--ide-插件中使用)会改它，
+  窗口关闭即按原样恢复，并留有备份。
 
 ## 前提
 
-- Windows 10/11 + **Microsoft 365 桌面版 Excel**，已安装加载项 **ChatGPT**（发布者 OpenAI）
-  并在面板里登录过一次；你的 ChatGPT 套餐需要能用这个加载项。
+- Windows 10/11 + **Microsoft 365 桌面版 Excel**，以及 ChatGPT 加载项（发布者 OpenAI）。
+  不用提前登录，第一次运行时会自动打开 Excel 带你登录；还没安装加载项的，Excel 一般会提示信任并安装，
+  不行就先从 开始 → 加载项 里装上。你的 ChatGPT 套餐需要能用这个加载项。
 - Codex CLI：`npm install -g @openai/codex`。
 - 只有从源码运行才需要 Python 3.10+（[python.org](https://www.python.org/downloads/)，安装时勾选 *Add python.exe to PATH*），免安装版不需要。
 - 能访问 `bps.openai.com`（需要代理见[代理](#代理)）。
 
 ## 快速开始（Windows）
-
-先打开 Excel → 开始 → 加载项 → **ChatGPT**，确认面板里已登录。之后 Excel 可以关掉。
 
 **方式一：免安装版（推荐）**
 
@@ -48,6 +50,9 @@ Codex CLI ──(Responses API, 127.0.0.1)──▶ excel-codex-bridge ──(HT
    或者把解压目录加进 `PATH`，之后直接输入 `excel-codex`。
 
 exe 没有代码签名，首次运行时 SmartScreen 可能拦一下，点"更多信息 → 仍要运行"即可。
+
+第一次运行时还没有登录，程序会自动打开 Excel 并弹出 ChatGPT 面板，在面板里登录即可，
+登录完 Excel 会自动关掉，Codex 随即启动。详见[自动登录](#自动登录windows)。
 
 **方式二：从源码运行**
 
@@ -63,10 +68,12 @@ excel-codex -- -c model_reasoning_effort=high 调推理强度
 excel-codex -- exec "给 README 加一个目录"      非交互执行
 excel-codex -- resume --last                  继续上次会话
 excel-codex status                            检查会话是否可用、何时过期
+excel-codex login                             打开 Excel 的 ChatGPT 面板登录或续期
+excel-codex desktop                           让 Codex 桌面版 / IDE 插件走 Excel 链路
 ```
 
 启动器自己的选项：`--model`、`--proxy`、`--port`、`--codex <路径>`、`--webview-dir <目录>`、
-`--skip-session-check`。
+`--skip-session-check`、`--no-auto-signin`。
 
 ## 模型
 
@@ -91,16 +98,42 @@ excel-codex status                            检查会话是否可用、何时�
 
 TLS 证书校验始终开启。Codex 到桥接走 `127.0.0.1`，启动器会自动把它加进 `NO_PROXY`。
 
-## 在 Codex IDE 插件 / 桌面版中使用
+## 自动登录（Windows）
 
-这些客户端没法传 `-c`，改成常驻桥接加配置文件：
+本工具自己不登录，而是替你把 Excel 里官方的 ChatGPT 面板打开：
 
-```
-excel-codex serve          保持窗口开着，监听 127.0.0.1:8765
-excel-codex print-config   输出要加进 ~/.codex/config.toml 的片段
-```
+1. 发现本机没有可用会话时，程序生成一个小工作簿（`%LOCALAPPDATA%\excel-codex-bridge\excel-codex-sign-in.xlsx`），
+   里面嵌入了 ChatGPT 加载项（应用商店编号 `WA200010215`），用 Excel 打开后面板会自动弹出。
+2. 第一次会提示信任 / 安装加载项，同意后在面板里登录。如果面板没弹出来，点 开始 → 加载项 → ChatGPT。
+3. 程序读到新会话后自动关闭这个工作簿；Excel 是它打开的、又没有别的工作簿时，Excel 也一起关掉。
 
-不用时把那几行从 `config.toml` 删掉即可恢复。
+会话还剩不到 24 小时时，运行中的桥接会在后台把 Excel 最小化打开，已登录的面板通常会自己续期，
+续完自动关掉，不用你操作。`excel-codex login` 可随时手动触发（`--force` 即使会话还好也打开面板）。
+不想让程序动 Excel：加 `--no-auto-signin`，或设置环境变量 `EXCEL_BRIDGE_AUTO_SIGNIN=0`。
+
+> 自动弹出面板依赖 Office 的"随文档打开加载项"机制，是 v0.2.0 新加的，还没在各种 Office 版本上验证过，
+> 个别版本或组织策略下可能不生效。这时按第 2 步手动点开面板即可，其余步骤照常自动完成。
+
+## 在 Codex 桌面版 / IDE 插件中使用
+
+桌面版和 IDE 插件没法传 `-c`，只读 `~/.codex/config.toml`。本工具可以临时改写它：
+
+1. 双击免安装包里的 **`excel-codex-desktop.cmd`**（或运行 `excel-codex desktop`），
+   它会检查会话（需要时自动登录）、把 `config.toml` 指向桥接，并在 `127.0.0.1:8765` 上运行桥接。
+2. **重启 Codex 桌面版**（IDE 插件则重新加载窗口），模型列表里就是 `*-excel` 模型。
+3. 用的时候保持这个窗口开着（可以最小化）。**关掉窗口或按 Ctrl+C，`config.toml` 按原样恢复。**
+
+细节：
+
+- 改写前会把原文件存成 `config.toml.before-excel-codex`；你原来的 `model`、`model_provider`
+  等行只是加注释停用，恢复时逐字节还原。
+- `config.toml` 是所有 Codex 客户端共用的，窗口开着期间在终端直接运行 `codex` 也会走 Excel 链路。
+- 想长期保持：`excel-codex desktop --keep-config`，之后用 `excel-codex desktop --off` 恢复
+  （窗口意外被杀、配置没还原时也用它）。
+- 换模型：`excel-codex desktop --model gpt-5.6-terra-excel`；换端口：`--port`。
+
+也可以全手动：`excel-codex serve` 常驻桥接，再把 `excel-codex print-config` 输出的片段加进
+`config.toml`，不用时删掉。
 
 ## macOS / WSL（实验性）
 
@@ -113,8 +146,8 @@ excel-codex print-config   输出要加进 ~/.codex/config.toml 的片段
 
 ## 会话过期
 
-加载项的 token 大约 10 天有效。桥接每次请求前都会检查，过期或临近过期时重新读取本机缓存，
-所以只要在 Excel 里打开一次 ChatGPT 面板让它刷新，**不用重启**桥接或 Codex。
+加载项的 token 大约 10 天有效。桥接每次请求前都会检查，过期或临近过期时重新读取本机缓存；
+在 Windows 上还会在剩余不到 24 小时时[自动打开面板续期](#自动登录windows)，**不用重启**桥接或 Codex。
 `excel-codex status` 可查看剩余时间。
 
 ## 限制
@@ -139,7 +172,9 @@ excel-codex print-config   输出要加进 ~/.codex/config.toml 的片段
 | 变量 | 作用 |
 | --- | --- |
 | `EXCEL_BRIDGE_PROXY` | 出站代理（同 `--proxy`） |
-| `EXCEL_BRIDGE_HOME` | 状态目录：模型目录 JSON 和 `bridge.log`。默认 `%LOCALAPPDATA%\excel-codex-bridge` 或 `~/.excel-codex-bridge` |
+| `EXCEL_BRIDGE_HOME` | 状态目录：模型目录 JSON、`bridge.log` 和登录用工作簿。默认 `%LOCALAPPDATA%\excel-codex-bridge` 或 `~/.excel-codex-bridge` |
+| `EXCEL_BRIDGE_AUTO_SIGNIN` | 设为 `0` 时不自动打开 Excel（同 `--no-auto-signin`） |
+| `CODEX_HOME` | Codex 配置目录，`desktop` 改写其中的 `config.toml`。默认 `~/.codex` |
 | `GHCP_EXCEL_WEBVIEW2_DATA_DIR` | Windows WebView2 数据根目录（同 `--webview-dir`） |
 | `GHCP_EXCEL_WEBKIT_WEBSITE_DATA_DIR` | macOS WebKit 数据目录 |
 | `GHCP_EXCEL_RESPONSES_URL` | 上游地址（测试用） |

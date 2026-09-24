@@ -1,7 +1,8 @@
 """Codex wiring: a model catalog for the Excel aliases and the ``-c`` overrides.
 
 The launcher passes everything on the Codex command line, so the user's
-``~/.codex/config.toml`` is never modified.
+``~/.codex/config.toml`` is left alone; only ``excel-codex desktop`` edits it
+(see ``desktop_config``).
 """
 
 from __future__ import annotations

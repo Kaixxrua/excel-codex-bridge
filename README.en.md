@@ -5,11 +5,11 @@
 > **Unofficial.** Not affiliated with, endorsed by, or supported by OpenAI or Microsoft.
 > Read [Risks and disclaimer](#risks-and-disclaimer) before using it.
 
-Run the [Codex CLI](https://github.com/openai/codex) on the ChatGPT session that the
-**ChatGPT add-in for Excel** already keeps on *your own* computer. One command (or a
-double-click) starts a local bridge and Codex together; quitting Codex stops the bridge.
-Nothing logs in on your behalf, nothing listens beyond loopback, and the session stays in
-memory and only goes to OpenAI.
+Run the [Codex CLI](https://github.com/openai/codex) and the Codex desktop app on the ChatGPT
+session that the **ChatGPT add-in for Excel** keeps on *your own* computer. One command (or a
+double-click) starts a local bridge and Codex together; quitting stops the bridge. When a sign-in
+is needed, it opens Excel's ChatGPT pane for you and the add-in signs in itself. Nothing listens
+beyond loopback, and the session stays in memory and only goes to OpenAI.
 
 ## How it works
 
@@ -19,9 +19,9 @@ Codex CLI ──(Responses API, 127.0.0.1)──▶ excel-codex-bridge ──(HT
                         reads the add-in's locally cached sign-in, read-only, never persisted
 ```
 
-- **No login of its own.** No OAuth, no passwords. You sign in inside Excel's ChatGPT pane;
-  the bridge only reads the session the add-in caches in its local WebView2 storage
-  (`bps_auth_tokens`).
+- **No login of its own.** No OAuth, no passwords. You sign in inside Excel's ChatGPT pane
+  (which the tool [opens for you](#automatic-sign-in-windows) when needed); the bridge only reads
+  the session the add-in caches in its local WebView2 storage (`bps_auth_tokens`).
 - **The token stays in memory.** It is never written to disk or uploaded, and is only sent to
   `bps.openai.com`. The log holds request lines and error types, never prompts or tokens.
 - **Local only.** Loopback addresses only. Requests from non-loopback peers, with a non-loopback
@@ -30,22 +30,22 @@ Codex CLI ──(Responses API, 127.0.0.1)──▶ excel-codex-bridge ──(HT
 - **Tool calls.** The Excel backend rejects client-defined tools, so the bridge describes
   Codex's tools (shell, apply_patch, …) in the prompt; the model calls them through the
   backend's native `run_officejs`, and the bridge turns those back into Codex tool calls.
-- **Your Codex config is left alone.** The launcher passes the provider and model catalog as
-  `-c` overrides, so `~/.codex/config.toml` is untouched and plain `codex` keeps working as before.
+- **Your Codex config is left alone.** The CLI launcher passes the provider and model catalog as
+  `-c` overrides, so `~/.codex/config.toml` is untouched. Only [desktop mode](#codex-desktop-app--ide-extension)
+  edits it, restores it exactly when its window closes, and keeps a backup.
 
 ## Requirements
 
 - Windows 10/11 with **Microsoft 365 desktop Excel** and the **ChatGPT** add-in (publisher
-  OpenAI) installed and signed in at least once; your ChatGPT plan must include the add-in.
+  OpenAI). No need to sign in first: the first run opens Excel and walks you through it. If the
+  add-in is not installed, Excel usually offers to trust and install it; otherwise add it from
+  Home → Add-ins. Your ChatGPT plan must include the add-in.
 - Codex CLI: `npm install -g @openai/codex`.
 - Python 3.10+ only when running from source ([python.org](https://www.python.org/downloads/);
   tick *Add python.exe to PATH*); the no-install build does not need it.
 - Network access to `bps.openai.com` (see [Proxy](#proxy)).
 
 ## Quick start (Windows)
-
-First open Excel → Home → Add-ins → **ChatGPT** and make sure the pane is signed in. You can
-close Excel afterwards.
 
 **Option 1: no-install build (recommended)**
 
@@ -57,6 +57,9 @@ close Excel afterwards.
    to `PATH` and type `excel-codex`.
 
 The exe is not code-signed; if SmartScreen stops the first run, choose "More info → Run anyway".
+
+On the first run there is no session yet, so Excel opens with the ChatGPT pane: sign in there,
+Excel closes by itself and Codex starts. See [Automatic sign-in](#automatic-sign-in-windows).
 
 **Option 2: from source**
 
@@ -73,10 +76,12 @@ excel-codex -- -c model_reasoning_effort=high set reasoning effort
 excel-codex -- exec "add a table of contents to the README"
 excel-codex -- resume --last                  resume the last session
 excel-codex status                            is the session usable, and when does it expire
+excel-codex login                             open Excel's ChatGPT pane to sign in or refresh
+excel-codex desktop                           route the Codex desktop app / IDE extension here
 ```
 
 Launcher options: `--model`, `--proxy`, `--port`, `--codex <path>`, `--webview-dir <dir>`,
-`--skip-session-check`.
+`--skip-session-check`, `--no-auto-signin`.
 
 ## Models
 
@@ -103,16 +108,52 @@ For the bridge's outbound connection to `bps.openai.com`:
 TLS certificate verification is always on. Codex reaches the bridge on `127.0.0.1`, which the
 launcher adds to `NO_PROXY`.
 
-## Codex IDE extension / desktop app
+## Automatic sign-in (Windows)
 
-These clients cannot take `-c`, so run the bridge on its own and add a config snippet:
+The tool never signs in itself; it opens the official ChatGPT pane in Excel for you:
 
-```
-excel-codex serve          keep this window open; listens on 127.0.0.1:8765
-excel-codex print-config   prints the lines to add to ~/.codex/config.toml
-```
+1. With no usable session, it writes a small workbook
+   (`%LOCALAPPDATA%\excel-codex-bridge\excel-codex-sign-in.xlsx`) that embeds the ChatGPT add-in
+   (Marketplace asset `WA200010215`) and opens it in Excel, which shows the pane.
+2. The first time, Excel asks you to trust / install the add-in; then sign in in the pane. If no
+   pane appears, click Home → Add-ins → ChatGPT.
+3. Once the new session shows up, the workbook is closed again, and Excel too if the tool started
+   it and nothing else is open.
 
-Remove those lines from `config.toml` to go back.
+When less than 24 hours are left, a running bridge opens Excel minimized in the background; a
+signed-in pane usually refreshes on its own, and Excel closes again. `excel-codex login` does this
+on demand (`--force` opens the pane even when the session is fine). To keep the tool away from
+Excel, pass `--no-auto-signin` or set `EXCEL_BRIDGE_AUTO_SIGNIN=0`.
+
+> Opening the pane relies on Office's "open an add-in with a document" feature. It is new in
+> v0.2.0 and not yet verified on every Office build; some builds or organization policies may not
+> honor it. Then open the pane by hand (step 2) and the rest still happens automatically.
+
+## Codex desktop app / IDE extension
+
+These clients cannot take `-c` and read only `~/.codex/config.toml`, which the tool can point at
+the bridge for as long as you need it:
+
+1. Double-click **`excel-codex-desktop.cmd`** from the release zip (or run `excel-codex desktop`).
+   It checks the session (signing in if needed), points `config.toml` at the bridge and runs the
+   bridge on `127.0.0.1:8765`.
+2. **Restart the Codex desktop app** (or reload the IDE window); the model list shows the
+   `*-excel` models.
+3. Keep that window open while you work (minimizing is fine). **Closing it or pressing Ctrl+C
+   restores `config.toml` exactly.**
+
+Details:
+
+- The original file is saved as `config.toml.before-excel-codex`. Your own `model`,
+  `model_provider` and similar lines are only commented out and come back byte for byte.
+- `config.toml` is shared by every Codex client, so plain `codex` in a terminal also uses the
+  bridge while the window is open.
+- To keep it on: `excel-codex desktop --keep-config`, and later `excel-codex desktop --off`
+  (also the fix if the window was killed before it could restore the config).
+- Other model: `excel-codex desktop --model gpt-5.6-terra-excel`; other port: `--port`.
+
+Fully manual alternative: run `excel-codex serve` and add the output of `excel-codex print-config`
+to `config.toml`; remove those lines to go back.
 
 ## macOS / WSL (experimental)
 
@@ -126,8 +167,9 @@ Remove those lines from `config.toml` to go back.
 ## Session expiry
 
 The add-in's token lasts about 10 days. The bridge checks it before every request and re-reads
-the local cache when it has expired or is about to, so opening the ChatGPT pane in Excel once
-is enough; **no restart** of the bridge or Codex is needed. `excel-codex status` shows the time left.
+the local cache when it has expired or is about to; on Windows it also
+[refreshes it through Excel](#automatic-sign-in-windows) when less than 24 hours are left. **No
+restart** of the bridge or Codex is needed. `excel-codex status` shows the time left.
 
 ## Limitations
 
@@ -154,7 +196,9 @@ is enough; **no restart** of the bridge or Codex is needed. `excel-codex status`
 | Variable | Purpose |
 | --- | --- |
 | `EXCEL_BRIDGE_PROXY` | Outbound proxy (same as `--proxy`) |
-| `EXCEL_BRIDGE_HOME` | State folder for the model catalog JSON and `bridge.log`. Default `%LOCALAPPDATA%\excel-codex-bridge` or `~/.excel-codex-bridge` |
+| `EXCEL_BRIDGE_HOME` | State folder for the model catalog JSON, `bridge.log` and the sign-in workbook. Default `%LOCALAPPDATA%\excel-codex-bridge` or `~/.excel-codex-bridge` |
+| `EXCEL_BRIDGE_AUTO_SIGNIN` | `0` keeps the tool from opening Excel (same as `--no-auto-signin`) |
+| `CODEX_HOME` | Codex config folder whose `config.toml` `desktop` edits. Default `~/.codex` |
 | `GHCP_EXCEL_WEBVIEW2_DATA_DIR` | Windows WebView2 data root (same as `--webview-dir`) |
 | `GHCP_EXCEL_WEBKIT_WEBSITE_DATA_DIR` | macOS WebKit data folder |
 | `GHCP_EXCEL_RESPONSES_URL` | Upstream URL (for testing) |
