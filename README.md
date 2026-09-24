@@ -1,17 +1,12 @@
 # excel-codex-bridge
 
-> **Unofficial.** Not affiliated with, endorsed by, or supported by OpenAI or Microsoft.
+**简体中文** | [English](README.en.md)
 
-Run the [Codex CLI](https://github.com/openai/codex) on the ChatGPT session that the
-**ChatGPT add-in for Excel** already keeps on *your own* computer. One command starts a
-local bridge and Codex together; quitting Codex stops the bridge. Nothing logs in on your
-behalf, nothing listens beyond `127.0.0.1`, and the session never leaves memory except
-towards OpenAI. See [Risks](#风险与免责声明) before using it.
+> **非官方项目**，与 OpenAI、Microsoft 无任何关联，也未获其认可。使用前请先读[风险与免责声明](#风险与免责声明)。
 
----
-
-用你**自己电脑上**已登录的 ChatGPT Excel 加载项会话来跑 Codex CLI：双击或一条命令，
-本地桥接和 Codex 一起启动，退出 Codex 时桥接自动关闭。
+用你**自己电脑上**已登录的 ChatGPT Excel 加载项会话来跑 [Codex CLI](https://github.com/openai/codex)：
+双击或一条命令，本地桥接和 Codex 一起启动，退出 Codex 时桥接自动关闭。
+不代你登录，不监听本机以外的地址，会话只在内存里，只发往 OpenAI。
 
 ## 工作原理
 
