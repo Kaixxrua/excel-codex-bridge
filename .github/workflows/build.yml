@@ -52,8 +52,6 @@ jobs:
   windows:
     needs: test
     runs-on: windows-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -64,13 +62,6 @@ jobs:
           node-version: 22
       - run: npm install -g @openai/codex@${{ env.CODEX_VERSION }}
       - run: python -m pip install -r requirements.txt pyinstaller
-
-      - name: Check the tag matches the package version
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
-        run: |
-          $version = python -c "import sys; sys.path.insert(0, 'src'); import excel_codex_bridge as m; print(m.__version__)"
-          if ("v$version" -ne $env:GITHUB_REF_NAME) { throw "tag $env:GITHUB_REF_NAME does not match version $version" }
 
       - name: Build excel-codex.exe
         run: >-
@@ -110,13 +101,85 @@ jobs:
             ${{ env.PACKAGE }}.zip
             ${{ env.PACKAGE }}.zip.sha256
 
+  macos:
+    name: macos (${{ matrix.arch }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install -g @openai/codex@${{ env.CODEX_VERSION }}
+      - run: python -m pip install -r requirements.txt pyinstaller
+
+      - name: Build excel-codex
+        run: >-
+          python -m PyInstaller --noconfirm --clean --onedir --console
+          --name excel-codex --paths src
+          --collect-submodules uvicorn --hidden-import anyio._backends._asyncio
+          packaging/entry.py
+
+      - name: e2e (excel-codex)
+        run: python tests/e2e/run_e2e.py -- dist/excel-codex/excel-codex
+      - name: e2e (excel-codex desktop)
+        run: python tests/e2e/run_e2e.py --desktop -- dist/excel-codex/excel-codex
+
+      - name: Package
+        run: |
+          version=$(python -c "import sys; sys.path.insert(0, 'src'); import excel_codex_bridge as m; print(m.__version__)")
+          name="excel-codex-bridge-$version-macos-${{ matrix.arch }}"
+          mkdir -p "$name/docs"
+          cp -R dist/excel-codex/. "$name/"
+          cp excel-codex-desktop.command README.md README.en.md LICENSE UPSTREAM-LICENSE "$name/"
+          cp docs/qq-group.jpg "$name/docs/"
+          # The double-click launcher must find the packaged binary.
+          CODEX_HOME="$RUNNER_TEMP/codex-home" "./$name/excel-codex-desktop.command" --off
+          tar -czf "$name.tar.gz" "$name"
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+          echo "PACKAGE=$name" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE }}
+          path: |
+            ${{ env.PACKAGE }}.tar.gz
+            ${{ env.PACKAGE }}.tar.gz.sha256
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [e2e-linux, windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag matches the package version
+        run: |
+          version=$(python3 -c "import sys; sys.path.insert(0, 'src'); import excel_codex_bridge as m; print(m.__version__)")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match version $version" >&2
+            exit 1
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
       - name: Publish the release
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: >-
-          gh release create $env:GITHUB_REF_NAME
-          "$env:PACKAGE.zip" "$env:PACKAGE.zip.sha256"
-          --title "excel-codex-bridge $env:GITHUB_REF_NAME"
+          gh release create "$GITHUB_REF_NAME" packages/*
+          --title "excel-codex-bridge $GITHUB_REF_NAME"
           --notes-file packaging/RELEASE_NOTES.md

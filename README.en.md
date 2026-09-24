@@ -40,6 +40,7 @@ Codex CLI ──(Responses API, 127.0.0.1)──▶ excel-codex-bridge ──(HT
   OpenAI). No need to sign in first: the first run opens Excel and walks you through it. If the
   add-in is not installed, Excel usually offers to trust and install it; otherwise add it from
   Home → Add-ins. Your ChatGPT plan must include the add-in.
+  On a Mac, see [macOS](#macos--wsl-experimental).
 - Codex CLI: `npm install -g @openai/codex`.
 - Python 3.10+ only when running from source ([python.org](https://www.python.org/downloads/);
   tick *Add python.exe to PATH*); the no-install build does not need it.
@@ -157,8 +158,33 @@ to `config.toml`; remove those lines to go back.
 
 ## macOS / WSL (experimental)
 
-- **macOS**: `./excel-codex.sh` reads the WebKit local storage in Excel's sandbox.
-- **WSL**: Excel lives on the Windows side, so point the bridge at its data folder:
+**macOS, no install** (reads the WebKit local storage in Mac Excel's sandbox; no Windows PC needed):
+
+1. In Mac Excel, click Home → Add-ins → ChatGPT and sign in once in the pane. There is no automatic
+   sign-in on the Mac; the session lasts about 10 days, then open the pane again. The bridge does
+   not need a restart.
+2. Download `excel-codex-bridge-<version>-macos-arm64.tar.gz` (Intel Macs: `macos-x64`) from
+   [Releases](https://github.com/Kaixxrua/excel-codex-bridge/releases/latest) and double-click it to extract.
+3. The build is not signed by Apple. If you downloaded it with a browser, clear the quarantine flag once
+   in Terminal, or macOS will say the developer cannot be verified:
+
+   ```
+   xattr -dr com.apple.quarantine ~/Downloads/excel-codex-bridge-<version>-macos-arm64
+   ```
+
+   (Downloads made with `curl` carry no quarantine flag; the release notes have the command.)
+4. Then use it as on Windows:
+   - Codex CLI: run `<folder>/excel-codex` from your project folder, with the same arguments; or add
+     the folder to `PATH`.
+   - Codex desktop app: double-click `excel-codex-desktop.command`, then quit the desktop app with
+     `Cmd+Q` and open it again. Keep the Terminal window open; closing it or pressing Ctrl+C restores
+     `config.toml` exactly.
+
+The first time the session is read, macOS may ask whether Terminal may access data from other apps;
+allow it. To run from source instead, use `./excel-codex.sh` (Python 3.10+), and
+`./excel-codex.sh desktop` for desktop mode.
+
+**WSL**: Excel lives on the Windows side, so point the bridge at its data folder:
 
   ```
   ./excel-codex.sh --webview-dir /mnt/c/Users/<you>/AppData/Local/Microsoft/Office

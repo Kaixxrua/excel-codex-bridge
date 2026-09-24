@@ -240,7 +240,7 @@ _PACKAGE_ROOT = str(Path(__file__).resolve().parent.parent)
 
 
 def _frozen() -> bool:
-    """Running from the PyInstaller build (the Windows release)."""
+    """Running from a PyInstaller release build."""
     return bool(getattr(sys, "frozen", False))
 
 

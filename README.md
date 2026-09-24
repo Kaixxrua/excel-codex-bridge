@@ -33,6 +33,7 @@ Codex CLI ──(Responses API, 127.0.0.1)──▶ excel-codex-bridge ──(HT
 ## 前提
 
 - Windows 10/11 + **Microsoft 365 桌面版 Excel**，以及 ChatGPT 加载项（发布者 OpenAI）。
+  Mac 用户见 [macOS](#macos--wsl实验性)。
   不用提前登录，第一次运行时会自动打开 Excel 带你登录；还没安装加载项的，Excel 一般会提示信任并安装，
   不行就先从 开始 → 加载项 里装上。你的 ChatGPT 套餐需要能用这个加载项。
 - Codex CLI：`npm install -g @openai/codex`。
@@ -137,8 +138,28 @@ TLS 证书校验始终开启。Codex 到桥接走 `127.0.0.1`，启动器会自�
 
 ## macOS / WSL（实验性）
 
-- **macOS**：`./excel-codex.sh`，读取 Excel 沙盒里的 WebKit 本地存储。
-- **WSL**：Excel 装在 Windows 侧，把它的数据目录指给桥接：
+**macOS 免安装版**（读取 Mac 版 Excel 沙盒里的 WebKit 本地存储，不需要 Windows 电脑）：
+
+1. 在 Mac 版 Excel 里点 开始 → 加载项 → ChatGPT，在面板里登录一次。Mac 上没有自动登录，
+   会话大约 10 天有效，到期后再打开一次面板即可，不用重启桥接。
+2. 从 [Releases](https://github.com/Kaixxrua/excel-codex-bridge/releases/latest) 下载
+   `excel-codex-bridge-<版本>-macos-arm64.tar.gz`（Intel 芯片选 `macos-x64`），双击解压。
+3. 程序没有 Apple 签名，用浏览器下载的要先在终端解除隔离一次，否则会提示"无法验证开发者"：
+
+   ```
+   xattr -dr com.apple.quarantine ~/Downloads/excel-codex-bridge-<版本>-macos-arm64
+   ```
+
+   （用 `curl` 下载的没有隔离标记，可以跳过这一步，发布说明里有现成命令。）
+4. 用法和 Windows 一样：
+   - Codex CLI：在项目目录运行 `<解压目录>/excel-codex`，参数同上；也可以把解压目录加进 `PATH`。
+   - Codex 桌面版：双击 `excel-codex-desktop.command`，然后按 `Cmd+Q` 完全退出 Codex 桌面版再打开。
+     终端窗口保持开着，用完关掉窗口或按 Ctrl+C，`config.toml` 按原样恢复。
+
+第一次读取会话时，macOS 可能询问是否允许"终端"访问其他 App 的数据，选允许。
+想从源码运行就用 `./excel-codex.sh`（需要 Python 3.10+），桌面版模式是 `./excel-codex.sh desktop`。
+
+**WSL**：Excel 装在 Windows 侧，把它的数据目录指给桥接：
 
   ```
   ./excel-codex.sh --webview-dir /mnt/c/Users/<你>/AppData/Local/Microsoft/Office
