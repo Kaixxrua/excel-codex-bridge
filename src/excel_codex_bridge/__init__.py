@@ -1,3 +1,3 @@
 """Run Codex on your own ChatGPT Excel add-in session, locally."""
 
-__version__ = "0.2.2"
+__version__ = "0.3.0"
