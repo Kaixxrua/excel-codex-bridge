@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import unittest
+from pathlib import Path
 
 from excel_codex_bridge import excel_upstream
 
@@ -252,6 +253,35 @@ class ExcelUpstreamTests(unittest.TestCase):
         self.assertEqual(first["metadata"]["task_id"], next_turn["metadata"]["task_id"])
         self.assertNotEqual(first["metadata"]["turn_id"], next_turn["metadata"]["turn_id"])
         self.assertEqual(next_turn["metadata"]["agent_iteration"], "1")
+
+    def test_turn_identity_ignores_how_pictures_were_passed_on(self):
+        def body(url: str) -> dict:
+            return {
+                "model": "gpt-5.6-sol-excel",
+                "input": [
+                    {"type": "message", "role": "user", "content": [
+                        {"type": "input_image", "image_url": url, "detail": "high"},
+                        {"type": "input_text", "text": "what is this?"},
+                    ]},
+                    {"type": "function_call_output", "call_id": "call_1", "output": "done"},
+                ],
+            }
+
+        original = body("data:image/png;base64,iVBORw0KGgo=")["input"]
+        # The link changes when the Cloudflare tunnel restarts mid-turn, or
+        # becomes a text note when upstream could not fetch it.
+        first = excel_upstream.prepare_responses_body(
+            body("https://a.trycloudflare.com/i/x.png"), identity_input=original
+        )
+        second = excel_upstream.prepare_responses_body(
+            body("https://b.trycloudflare.com/i/x.png"), identity_input=original
+        )
+        self.assertEqual(first["metadata"]["turn_id"], second["metadata"]["turn_id"])
+        self.assertEqual(first["metadata"]["task_id"], second["metadata"]["task_id"])
+        self.assertEqual(second["metadata"]["agent_iteration"], "2")
+        self.assertIn("b.trycloudflare.com", json.dumps(second["input"]))
+        unpinned = excel_upstream.prepare_responses_body(body("https://b.trycloudflare.com/i/x.png"))
+        self.assertNotEqual(first["metadata"]["turn_id"], unpinned["metadata"]["turn_id"])
 
     def test_encrypted_reasoning_is_replayed_and_bare_reasoning_dropped(self):
         items = excel_upstream.translate_input_items(
@@ -794,6 +824,62 @@ class ExcelUpstreamTests(unittest.TestCase):
         self.assertEqual(replay[1]["type"], "function_call_output")
         self.assertEqual(replay[1]["id"], f"fc_{call_id}")
         self.assertEqual(replay[1]["output"], "Done!")
+
+    def test_native_calls_replay_exactly_after_a_restart(self):
+        call_id = "call_after_restart"
+        native = {
+            "type": "function_call",
+            "id": "fc_upstream_own_id",
+            "call_id": call_id,
+            "name": "run_officejs",
+            "arguments": '{"code": "{\\"tool\\": \\"exec_command\\"}", "summary": "Look at the sheet"}',
+            "status": "completed",
+        }
+        body = {
+            "model": "gpt-5.6-sol-excel",
+            "input": [
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+                {
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": "exec_command",
+                    "arguments": '{"cmd": "ls"}',
+                },
+                {"type": "function_call_output", "call_id": call_id, "output": "ok"},
+            ],
+            "tools": [{"type": "function", "name": "exec_command"}],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            excel_upstream.keep_native_calls_in(Path(tmp) / "tool-calls.sqlite3")
+            try:
+                excel_upstream._remember_native_call(native)
+                # A new bridge process starts with an empty cache.
+                with excel_upstream._native_call_cache_lock:
+                    excel_upstream._native_call_cache.clear()
+                excel_upstream.keep_native_calls_in(Path(tmp) / "tool-calls.sqlite3")
+                replay = [
+                    item
+                    for item in excel_upstream.prepare_responses_body(body)["input"]
+                    if item.get("call_id") == call_id
+                ]
+            finally:
+                excel_upstream.keep_native_calls_in(None)
+        self.assertEqual(replay[0], native)
+        self.assertEqual(replay[1]["type"], "function_call_output")
+
+    def test_a_broken_call_store_is_only_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tool-calls.sqlite3"
+            path.write_bytes(b"not a database" * 100)
+            excel_upstream.keep_native_calls_in(path)
+            try:
+                excel_upstream._remember_native_call(
+                    {"type": "function_call", "id": "fc_x", "call_id": "call_broken_store", "name": "run_officejs",
+                     "arguments": "{}"}
+                )
+                self.assertEqual(excel_upstream._remembered_native_call("call_broken_store")["id"], "fc_x")
+            finally:
+                excel_upstream.keep_native_calls_in(None)
 
     def test_tools_version_is_forwarded_as_authoritative_metadata(self):
         body = excel_upstream.prepare_responses_body(

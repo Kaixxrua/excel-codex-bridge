@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from . import __version__, codex_config, desktop_config, excel_signin
+from . import __version__, codex_config, desktop_config, excel_signin, excel_upstream
 from .session import SessionReader
 
 
@@ -144,11 +144,21 @@ def cmd_serve(args) -> int:
 SHUTDOWN_GRACE_SECONDS = 3
 
 
+def _keep_native_calls() -> None:
+    home = codex_config.state_dir()
+    try:
+        home.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    excel_upstream.keep_native_calls_in(home / "tool-calls.sqlite3")
+
+
 def _run_bridge(reader: SessionReader, args, *, host: str, port: int, quiet: bool) -> None:
     import uvicorn
 
     from .server import create_app
 
+    _keep_native_calls()
     keeper = excel_signin.SessionKeeper(_signin(reader, args))
     keeper.start()
     try:

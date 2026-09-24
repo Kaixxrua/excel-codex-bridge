@@ -11,6 +11,7 @@ isolated in memory and expose only non-secret status information.
 from __future__ import annotations
 
 import base64
+import contextlib
 import copy
 import ctypes
 from ctypes import wintypes
@@ -18,6 +19,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -67,6 +69,9 @@ _TOOLS_VERSION_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
 _NATIVE_CALL_CACHE_LIMIT = 512
 _native_call_cache_lock = threading.Lock()
 _native_call_cache: OrderedDict[str, dict] = OrderedDict()
+_STORED_CALL_LIMIT = 5000
+_STORED_CALL_MAX_AGE = 60 * 86400
+_native_call_store_path: str | None = None
 _TOOL_CALL_PATTERN = re.compile(
     re.escape(TOOL_CALL_MARKER_OPEN)
     + r"\s*(\{.*?\})\s*"
@@ -283,6 +288,66 @@ def _original_client_tool_name(
     return name if name in allowed_tools else None
 
 
+def keep_native_calls_in(path: str | os.PathLike | None) -> None:
+    """Also keep remembered native calls in a SQLite file, so they survive restarts.
+
+    Codex drops the upstream item id and the model's own summary/references
+    from the tool calls it sends back; only the original item replays exactly.
+    Without this file a restarted bridge (a reopened desktop window, or
+    ``codex resume``) could only rebuild approximate items for earlier calls.
+    """
+    global _native_call_store_path
+    if path is None:
+        _native_call_store_path = None
+        return
+    try:
+        with contextlib.closing(sqlite3.connect(os.fspath(path), timeout=5)) as db, db:
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS native_calls "
+                "(call_id TEXT PRIMARY KEY, item TEXT NOT NULL, saved_at REAL NOT NULL)"
+            )
+            db.execute("DELETE FROM native_calls WHERE saved_at < ?", (time.time() - _STORED_CALL_MAX_AGE,))
+            db.execute(
+                "DELETE FROM native_calls WHERE call_id NOT IN "
+                "(SELECT call_id FROM native_calls ORDER BY saved_at DESC LIMIT ?)",
+                (_STORED_CALL_LIMIT,),
+            )
+    except (sqlite3.Error, OSError):
+        _native_call_store_path = None
+        return
+    # Tool arguments can hold workbook contents.
+    with contextlib.suppress(OSError):
+        os.chmod(path, 0o600)
+    _native_call_store_path = os.fspath(path)
+
+
+def _store_native_call(call_id: str, item: dict) -> None:
+    path = _native_call_store_path
+    if path is None:
+        return
+    try:
+        with contextlib.closing(sqlite3.connect(path, timeout=5)) as db, db:
+            db.execute(
+                "INSERT OR REPLACE INTO native_calls (call_id, item, saved_at) VALUES (?, ?, ?)",
+                (call_id, json.dumps(item, ensure_ascii=False), time.time()),
+            )
+    except (sqlite3.Error, OSError):
+        pass
+
+
+def _stored_native_call(call_id: str) -> dict | None:
+    path = _native_call_store_path
+    if path is None:
+        return None
+    try:
+        with contextlib.closing(sqlite3.connect(path, timeout=5)) as db:
+            row = db.execute("SELECT item FROM native_calls WHERE call_id = ?", (call_id,)).fetchone()
+        item = json.loads(row[0]) if row else None
+    except (sqlite3.Error, OSError, ValueError):
+        return None
+    return item if isinstance(item, dict) else None
+
+
 def _remember_native_call(item: dict) -> None:
     call_id = item.get("call_id")
     if not isinstance(call_id, str) or not call_id:
@@ -292,6 +357,7 @@ def _remember_native_call(item: dict) -> None:
         _native_call_cache.move_to_end(call_id)
         while len(_native_call_cache) > _NATIVE_CALL_CACHE_LIMIT:
             _native_call_cache.popitem(last=False)
+    _store_native_call(call_id, item)
 
 
 def _remembered_native_call(call_id: object) -> dict | None:
@@ -299,10 +365,17 @@ def _remembered_native_call(call_id: object) -> dict | None:
         return None
     with _native_call_cache_lock:
         item = _native_call_cache.get(call_id)
-        if item is None:
-            return None
-        _native_call_cache.move_to_end(call_id)
-        return copy.deepcopy(item)
+        if item is not None:
+            _native_call_cache.move_to_end(call_id)
+            return copy.deepcopy(item)
+    item = _stored_native_call(call_id)
+    if item is None:
+        return None
+    with _native_call_cache_lock:
+        _native_call_cache[call_id] = copy.deepcopy(item)
+        while len(_native_call_cache) > _NATIVE_CALL_CACHE_LIMIT:
+            _native_call_cache.popitem(last=False)
+    return item
 
 
 def _client_tool_specs(source: dict) -> dict[str, dict]:
@@ -1551,8 +1624,15 @@ def prepare_responses_body(
     source: dict,
     *,
     tools_version_id: str | None = None,
+    identity_input: object = None,
 ) -> dict:
-    """Translate a standard Responses request to the Excel add-in wire shape."""
+    """Translate a standard Responses request to the Excel add-in wire shape.
+
+    ``identity_input``: the input as the client sent it, when ``source`` has
+    been rewritten since (pictures swapped for links, which can change from one
+    request to the next).  Task and turn identity come from it, so a turn keeps
+    its ``turn_id`` however its pictures were passed on.
+    """
     output: dict[str, object] = {
         "model": upstream_model_for(source.get("model")),
         # Match the official Excel add-in wire shape. The add-in marks picker
@@ -1565,12 +1645,15 @@ def prepare_responses_body(
 
     raw_input = source.get("input")
     input_items = translate_input_items(raw_input, client_tool_types(source))
+    identity = raw_input if identity_input is None else identity_input
     # Captured before the prologue is prepended: the injected instructions and
     # catalog are identical across conversations, so only the caller's own
     # first history item identifies this conversation. Use translated items:
     # Codex changes private per-turn metadata on a new user turn, but that
     # metadata must not create a new Excel task/session.
-    history_root = _conversation_fingerprint(input_items)
+    history_root = _conversation_fingerprint(
+        input_items if identity is raw_input else translate_input_items(identity, client_tool_types(source))
+    )
 
     # Prompt layout is chosen for the upstream prompt cache: everything that is
     # stable across a conversation leads, so each turn only re-bills the newly
@@ -1626,7 +1709,7 @@ def prepare_responses_body(
         for key, value in raw_metadata.items():
             if isinstance(key, str) and isinstance(value, (str, int, float, bool)):
                 metadata[key[:64]] = str(value)[:512]
-    turn_fingerprint, iteration = _agent_turn_state(raw_input)
+    turn_fingerprint, iteration = _agent_turn_state(identity)
     metadata.setdefault("agent_iteration", iteration)
     # Identifiers are derived, never random: the same client request must
     # serialize to the same bytes every time. A conversation keeps one task
