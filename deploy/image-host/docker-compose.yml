@@ -1,0 +1,51 @@
+# The excel-codex image host. deploy.sh writes .env and starts this; see README.
+#
+#   docker compose --profile caddy up -d --build   # with Caddy on 80/443 for https
+#   docker compose up -d --build                   # behind a web server you already run
+name: excel-codex-image-host
+
+services:
+  image-host:
+    build:
+      context: ../..
+      dockerfile: deploy/image-host/Dockerfile
+    image: excel-codex-image-host
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:${IMAGE_HOST_PORT:-8095}:8080"
+    volumes:
+      - data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 384m
+    pids_limit: 64
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  caddy:
+    profiles: ["caddy"]
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - image-host
+    ports:
+      - "80:80"
+      - "443:443"
+    command: caddy reverse-proxy --from "${IMAGE_HOST_DOMAIN:?set IMAGE_HOST_DOMAIN in .env}" --to image-host:8080
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  data:
+  caddy-data:
+  caddy-config:

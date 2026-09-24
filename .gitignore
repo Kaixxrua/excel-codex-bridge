@@ -6,3 +6,4 @@ build/
 dist/
 .pytest_cache/
 *.spec
+deploy/image-host/.env
