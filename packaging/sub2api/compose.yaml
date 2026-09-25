@@ -1,0 +1,44 @@
+services:
+  excel-sub2api:
+    build:
+      context: ../..
+      dockerfile: packaging/sub2api/Dockerfile
+    image: excel-sub2api:local
+    container_name: excel-sub2api
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    environment:
+      EXCEL_SUB2API_API_KEY_FILE: /run/secrets/api-key
+      EXCEL_SUB2API_ADMIN_KEY_FILE: /run/secrets/admin-key
+      EXCEL_BRIDGE_PROXY: ${EXCEL_BRIDGE_PROXY:-}
+    secrets:
+      - source: api-key
+        target: api-key
+      - source: admin-key
+        target: admin-key
+    networks:
+      - sub2api
+    # Intentionally no ports: only SUB2API's private Docker network can connect.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).close()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+secrets:
+  api-key:
+    file: ./secrets/api-key
+  admin-key:
+    file: ./secrets/admin-key
+
+networks:
+  sub2api:
+    external: true
+    name: ${SUB2API_NETWORK:?Set SUB2API_NETWORK to the existing SUB2API Docker network}

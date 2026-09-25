@@ -539,6 +539,7 @@ def _parser() -> argparse.ArgumentParser:
     config = sub.add_parser("print-config", help="print a config.toml snippet for `serve` mode")
     config.add_argument("--port", type=int, default=codex_config.DEFAULT_PORT)
     config.add_argument("--model", default=codex_config.DEFAULT_MODEL)
+    sub.add_parser("sub2api", add_help=False, help="opt-in SUB2API sidecar and SSH session sync")
     return parser
 
 
@@ -573,6 +574,9 @@ def main(argv: list[str] | None = None) -> int:
 
 def _main(argv: list[str]) -> int:
     argv = list(argv)
+    if argv and argv[0] == "sub2api":
+        from .sub2api_cli import main as sub2api_main
+        return sub2api_main(argv[1:])
     known = {"codex", "desktop", "serve", "status", "login", "print-config", "-h", "--help", "--version"}
     if not argv or argv[0] not in known:
         argv = ["codex", *argv]

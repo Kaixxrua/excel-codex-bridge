@@ -21,6 +21,7 @@ test = ["pytest>=8"]
 
 [project.scripts]
 excel-codex-bridge = "excel_codex_bridge.cli:main"
+excel-sub2api = "excel_codex_bridge.sub2api_cli:main"
 
 [tool.setuptools.dynamic]
 version = { attr = "excel_codex_bridge.__version__" }
