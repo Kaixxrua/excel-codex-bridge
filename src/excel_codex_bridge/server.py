@@ -2,8 +2,9 @@
 
 Only loopback clients are served, browser-originated requests are refused
 (DNS-rebinding / drive-by protection), and only the Excel model aliases are
-routed.  The bridge adds no credentials of its own: it forwards the session
-the signed-in add-in already cached on this machine.
+routed.  The bridge adds no credentials of its own: it forwards a ChatGPT
+sign-in already on this machine, Codex's own or the one the Excel add-in
+cached (see ``session``).
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from . import excel_upstream
 from . import image_generation
 from . import images
+from . import session
 from . import sse
 from .excel_stream import excel_tool_stream_transform
 from .session import SessionReader
@@ -37,9 +39,8 @@ PICTURE_RETRY_STATUSES = {400, 422}
 # Drawing a picture takes a minute or two; the add-in waits five minutes for an edit.
 IMAGE_TIMEOUT = httpx.Timeout(600.0, connect=30.0)
 _LOOPBACK_NAMES = {"localhost"}
-_REFRESH_HINT = (
-    "Open Excel, open the ChatGPT add-in pane (sign in if asked), then retry."
-)
+# The backend's answer when it will not take a sign-in.
+LOGIN_REFUSED_STATUSES = {401, 403}
 
 # Kept for tests ported from ghcp_proxy.
 _excel_tool_stream_transform = excel_tool_stream_transform
@@ -146,8 +147,14 @@ def build_upstream_client() -> httpx.AsyncClient:
     )
 
 
-def _upstream_error_response(upstream: httpx.Response, *, refused: str | None = None) -> Response:
-    """The backend's error for Codex; ``refused`` names what a 401/403 refused, else the session."""
+def _upstream_error_response(
+    upstream: httpx.Response,
+    *,
+    refused: str | None = None,
+    login: str = "the ChatGPT session",
+    hint: str = "",
+) -> Response:
+    """The backend's error for Codex; ``refused`` names what a 401/403 refused, else ``login``."""
     status = upstream.status_code
     try:
         payload = upstream.json()
@@ -166,7 +173,7 @@ def _upstream_error_response(upstream: httpx.Response, *, refused: str | None = 
         if refused:
             message = f"The Excel backend refused {refused} ({status}): {message}"
         else:
-            message = f"OpenAI rejected the Excel session ({status}): {message} {_REFRESH_HINT}"
+            message = f"OpenAI rejected {login} ({status}): {message} {hint}".rstrip()
     headers = {}
     retry_after = upstream.headers.get("retry-after")
     if retry_after:
@@ -246,10 +253,9 @@ class Bridge:
                 param="model",
             )
         body = {**body, "model": model_id}
-        headers = self._session_headers(stream=bool(body.get("stream")))
-        if isinstance(headers, Response):
-            return headers
-        return await self._send_with_pictures(headers, body)
+        return await self._signed_in(
+            lambda headers: self._send_with_pictures(headers, body), stream=bool(body.get("stream"))
+        )
 
     def _session_headers(self, *, stream: bool) -> dict | Response:
         self.reader.refresh()
@@ -257,7 +263,34 @@ class Bridge:
             return self.reader.store.request_headers(stream=stream)
         except RuntimeError as exc:
             detail = f" ({self.reader.last_error})" if self.reader.last_error else ""
-            return sse.openai_error_response(401, f"{exc}{detail} {_REFRESH_HINT}")
+            return sse.openai_error_response(401, f"{exc}{detail} {self.reader.hint()}")
+
+    async def _signed_in(self, send, *, stream: bool) -> Response:
+        """``send(headers)`` with the sign-in in use; again with the next one if it is refused."""
+        headers = self._session_headers(stream=stream)
+        if isinstance(headers, Response):
+            return headers
+        used = self.reader.source
+        response = await send(headers)
+        if response.status_code not in LOGIN_REFUSED_STATUSES or not self.reader.fall_back(used):
+            return response
+        log.warning(
+            "the Excel backend refused %s (HTTP %s: %s); using %s from now on",
+            session.NAMES.get(used or "", "the sign-in"), response.status_code, _error_text(response),
+            session.NAMES.get(self.reader.source or "", "the next sign-in"),
+        )
+        headers = self._session_headers(stream=stream)
+        if isinstance(headers, Response):
+            return response
+        return await send(headers)
+
+    def _rejected(self, upstream: httpx.Response, *, refused: str | None = None) -> Response:
+        return _upstream_error_response(
+            upstream,
+            refused=refused,
+            login=session.NAMES.get(self.reader.source or "", "the ChatGPT session"),
+            hint=self.reader.hint(),
+        )
 
     async def images(self, operation: str, body: dict) -> Response:
         """Codex's image tool: ``generations`` draws a new picture, ``edits`` changes given ones."""
@@ -269,9 +302,11 @@ class Bridge:
                 url, send = image_generation.EDITS_URL, {"data": data, "files": files}
         except image_generation.Refused as exc:
             return sse.openai_error_response(400, str(exc))
-        headers = self._session_headers(stream=False)
-        if isinstance(headers, Response):
-            return headers
+        return await self._signed_in(
+            lambda headers: self._draw(operation, url, send, headers), stream=False
+        )
+
+    async def _draw(self, operation: str, url: str, send: dict, headers: dict) -> Response:
         if "files" in send:
             headers = {key: value for key, value in headers.items() if key.lower() != "content-type"}
         try:
@@ -350,7 +385,7 @@ class Bridge:
             finally:
                 await upstream.aclose()
             log.warning("upstream returned HTTP %s", upstream.status_code)
-            return _upstream_error_response(upstream)
+            return self._rejected(upstream)
 
         transform = excel_tool_stream_transform(source_body)
 
@@ -407,7 +442,7 @@ class Bridge:
                 upstream = await self.client.send(request, stream=True)
                 if upstream.status_code >= 400:
                     await upstream.aread()
-                    return _upstream_error_response(upstream)
+                    return self._rejected(upstream)
                 if "text/event-stream" in upstream.headers.get("content-type", "").lower():
                     payload = await self._read_completed_payload(upstream)
                 else:

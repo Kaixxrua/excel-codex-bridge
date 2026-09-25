@@ -9,9 +9,10 @@
 > 此模式会在你显式运行同步命令后，把会话送到你指定的可信服务器；
 > 下文“仅本机、只发往 OpenAI”的说明指默认本地模式，不适用于远端插件模式。
 
-用你**自己电脑上**的 ChatGPT Excel 加载项会话来跑 [Codex CLI](https://github.com/openai/codex)
+用你**自己电脑上**已有的 ChatGPT 登录来跑 [Codex CLI](https://github.com/openai/codex)
 和 Codex 桌面版：双击或一条命令，本地桥接和 Codex 一起启动，退出时桥接自动关闭。
-需要登录时自动替你打开 Excel 的 ChatGPT 面板，登录由加载项自己完成；
+默认优先用 Codex 自己的登录（`codex login`），这样不必安装 Excel；后端不接受它时自动回退到
+Excel 加载项缓存的那份会话，需要时会替你打开 Excel 的 ChatGPT 面板登录。见[登录方式](#登录方式)。
 不监听本机以外的地址，会话只在内存里，只发往 OpenAI。
 
 ## 工作原理
@@ -19,12 +20,13 @@
 ```
 Codex CLI ──(Responses API, 127.0.0.1)──▶ excel-codex-bridge ──(HTTPS)──▶ bps.openai.com
                                                  ▲                      （ChatGPT for Excel 后端）
-                              只读 Excel 加载项本地缓存的登录态（不落盘）
+                       只读本机已有的 ChatGPT 登录（Codex 自己的，或 Excel 加载项缓存的；不落盘）
 ```
 
-- **自己不做登录**：不实现 OAuth，不碰账号密码。登录只在 Excel 的 ChatGPT 面板里完成
-  （需要时本工具会[自动打开这个面板](#自动登录windows)），本工具只读取加载项在本机 WebView2
-  存储里缓存的那份会话（`bps_auth_tokens`）。
+- **自己不做登录**：不实现 OAuth，不碰账号密码，也从不刷新或写入任何 token。它只读取本机上
+  已经存在的 ChatGPT 登录——优先是 Codex 自己的（`codex login` 写在 `~/.codex/auth.json`），
+  其次是 Excel 加载项缓存在 WebView2 里的那份会话（`bps_auth_tokens`）。用 Excel 那份时，需要登录会在
+  面板里完成（本工具会[自动打开面板](#自动登录windows)）。取哪一份、怎么回退见[登录方式](#登录方式)。
 - **token 只在内存里**：不写盘、不上传，只随请求发往 `bps.openai.com`；日志只有请求行和错误类型，
   不含提示词和 token。
 - **只给本机用**：只监听回环地址；拒绝非回环来源、非回环 `Host`（防 DNS rebinding）
@@ -43,13 +45,47 @@ Codex CLI ──(Responses API, 127.0.0.1)──▶ excel-codex-bridge ──(HT
 
 ## 前提
 
-- Windows 10/11 + **Microsoft 365 桌面版 Excel**，以及 ChatGPT 加载项（发布者 OpenAI）。
-  Mac 用户见 [macOS](#macos--wsl实验性)。
-  不用提前登录，第一次运行时会自动打开 Excel 带你登录；还没安装加载项的，Excel 一般会提示信任并安装，
-  不行就先从 开始 → 加载项 里装上。你的 ChatGPT 套餐需要能用这个加载项。
 - Codex CLI：`npm install -g @openai/codex`。
+- 一份本机已有的 ChatGPT 登录，二选一（详见[登录方式](#登录方式)）：
+  - **Codex 自己的登录**（默认、无需 Excel）：`codex login` 用 ChatGPT 登录一次即可，任意系统都行。
+  - **Excel 加载项的会话**（回退方案）：Windows 10/11 + **Microsoft 365 桌面版 Excel** 及 ChatGPT
+    加载项（发布者 OpenAI），Mac 见 [macOS](#macos--wsl实验性)。不用提前登录，需要时会自动打开 Excel
+    带你登录；还没装加载项的，Excel 一般会提示信任并安装，不行就从 开始 → 加载项 里装上。
+    你的 ChatGPT 套餐需要能用这个加载项。
 - 只有从源码运行才需要 Python 3.10+（[python.org](https://www.python.org/downloads/)，安装时勾选 *Add python.exe to PATH*），免安装版不需要。
 - 能访问 `bps.openai.com`（需要代理见[代理](#代理)）。
+
+## 登录方式
+
+桥接需要一份本机已有的 ChatGPT 登录。可用两处，默认按顺序自动选：
+
+1. **Codex 自己的登录**（`codex login` 写在 `$CODEX_HOME/auth.json`，默认 `~/.codex/auth.json`）。
+   用这份时不必安装 Excel，任意系统都行。
+2. **Excel 加载项缓存的会话**（回退）。当 Codex 没有用 ChatGPT 登录、它的登录已过期，或后端拒绝它时，
+   自动改用这份；需要登录会[自动打开 Excel 面板](#自动登录windows)。
+
+用 `--login` 或环境变量 `EXCEL_BRIDGE_LOGIN` 指定：
+
+| 值 | 含义 |
+| --- | --- |
+| `auto`（默认） | 先试 Codex 的登录，不行再用 Excel 的 |
+| `codex` | 只用 Codex 的登录（不碰 Excel） |
+| `excel` | 只用 Excel 加载项的会话（老用户的原有行为） |
+
+- **回退时机**（仅 `auto`）：Codex 未登录 / 用的是 API key / 登录已过期或将在 5 分钟内过期 /
+  后端返回 401、403。被 401、403 拒绝后会先用 Excel 会话重试一次，之后一直用 Excel，直到 `auth.json`
+  发生变化（例如你重新 `codex login`）才会再试 Codex。
+- `EXCEL_BRIDGE_CODEX_AUTH` 可指向别的 `auth.json`（默认取 `$CODEX_HOME`，再默认 `~/.codex`）。
+- 登录过期或不可用时，`excel-codex status` 会告诉你当前用的是哪一份、何时过期，并给出续期建议
+  （Codex 那份重新 `codex login`；Excel 那份 `excel-codex login`）。
+- 桥接从不刷新或写入任何 token；Codex 那份到期后请自行 `codex login`（`auto` 下会自动回退到 Excel）。
+- [SUB2API 远端同步](docs/sub2api.md)只会送 Excel 加载项的会话，Codex 的登录不会离开本机。
+
+> **注意**：Excel 后端是否接受 Codex CLI 自己的登录 token 尚未在真实后端上验证。若不接受，`auto`
+> 会自动回退到 Excel 会话；只想用经过验证的老链路，设 `--login excel` 即可。
+
+此想法来自 [MIKUbiu/bps-local](https://github.com/MIKUbiu/bps-local)，本项目是它的一个独立实现，
+详见[致谢与许可](#致谢与许可)。
 
 ## 快速开始（Windows）
 
@@ -79,13 +115,14 @@ excel-codex --model gpt-5.6-terra-excel       换模型
 excel-codex -- -c model_reasoning_effort=high 调推理强度
 excel-codex -- exec "给 README 加一个目录"      非交互执行
 excel-codex -- resume --last                  继续上次会话
-excel-codex status                            检查会话是否可用、何时过期
+excel-codex status                            看当前用哪份登录、是否可用、何时过期
+excel-codex --login codex                      只用 Codex 自己的登录（不碰 Excel）
 excel-codex login                             打开 Excel 的 ChatGPT 面板登录或续期
 excel-codex desktop                           让 Codex 桌面版 / IDE 插件走 Excel 链路
 ```
 
-启动器自己的选项：`--model`、`--proxy`、`--port`、`--codex <路径>`、`--webview-dir <目录>`、
-`--skip-session-check`、`--no-auto-signin`。
+启动器自己的选项：`--login <auto|codex|excel>`、`--model`、`--proxy`、`--port`、`--codex <路径>`、
+`--webview-dir <目录>`、`--skip-session-check`、`--no-auto-signin`。
 
 ## 模型
 
@@ -271,6 +308,8 @@ Codex 里贴的截图、`codex -i 图片.png` 和模型用 `view_image` 看图�
 
 | 变量 | 作用 |
 | --- | --- |
+| `EXCEL_BRIDGE_LOGIN` | 用哪份登录：`auto`（默认）/ `codex` / `excel`（同 `--login`），见[登录方式](#登录方式) |
+| `EXCEL_BRIDGE_CODEX_AUTH` | Codex 的 `auth.json` 路径，默认 `$CODEX_HOME/auth.json` 再默认 `~/.codex/auth.json` |
 | `EXCEL_BRIDGE_PROXY` | 出站代理（同 `--proxy`） |
 | `EXCEL_BRIDGE_HOME` | 状态目录：模型目录 JSON、`bridge.log`、登录用工作簿，以及让重启后仍能原样回放历史工具调用的 `tool-calls.sqlite3`（保留 60 天）。默认 `%LOCALAPPDATA%\excel-codex-bridge` 或 `~/.excel-codex-bridge` |
 | `EXCEL_BRIDGE_AUTO_SIGNIN` | 设为 `0` 时不自动打开 Excel（同 `--no-auto-signin`） |
@@ -296,6 +335,12 @@ PYTHONPATH=src .venv/bin/python -m pytest
 Excel 会话读取和 Basispoints 协议适配代码提取自
 [Nonary/ghcp_proxy](https://github.com/Nonary/ghcp_proxy)（Unlicense，基于 commit `ad23ce2`，
 原许可见 [UPSTREAM-LICENSE](UPSTREAM-LICENSE)）。本项目同样以 [Unlicense](LICENSE) 发布。
+
+**用 Codex 自己的登录直连 Excel 后端（从而无需安装 Excel）这一想法**，来自
+[MIKUbiu/bps-local](https://github.com/MIKUbiu/bps-local)（Unlicense）。感谢 MIKUbiu 的思路。
+本项目是它的一个独立实现：把这条登录作为可选来源接进原有的桥接与回退机制，实现代码为本项目自写。
+bps-local 的 Basispoints 协议部分源自 [hloolx/codex2api](https://github.com/hloolx/codex2api)（MIT，
+经 [ranxi2001/sub2api](https://github.com/ranxi2001/sub2api) 移植）；本项目对应部分则来自上文的 ghcp_proxy。
 
 感谢 [LINUX DO](https://linux.do) 社区。
 

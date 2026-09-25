@@ -24,6 +24,11 @@ followed by both results in the next request.
 ``images/generations``, the bridge must draw it with the add-in's image
 endpoint, and the picture must come back to the model in the tool result.
 
+``--codex-login`` also leaves a ChatGPT sign-in where ``codex login`` puts it:
+the bridge must use it rather than the Excel session.  With
+``--codex-login refused`` the backend refuses it, and the bridge must retry
+with the Excel session and keep that one.
+
 ``--images`` also attaches a picture (``codex exec -i``).  Like the real
 backend, the fake one refuses a user message with an inline picture; the
 bridge must then upload it once to the attachments endpoint, the way the
@@ -56,7 +61,7 @@ import uvicorn  # noqa: E402
 from fastapi import FastAPI, Request  # noqa: E402
 from fastapi.responses import JSONResponse, StreamingResponse  # noqa: E402
 
-from helpers import write_webview_session  # noqa: E402
+from helpers import write_codex_login, write_webview_session  # noqa: E402
 
 USER_PYTHONPATH = "e2e-user-pythonpath"
 USER_CONFIG = '# e2e user config\nmodel = "gpt-5.5"\n\n[history]\npersistence = "none"\n'
@@ -139,8 +144,11 @@ IMAGE_PROMPT = "a blue whale in a spreadsheet"
 
 
 class FakeExcelBackend:
-    def __init__(self, parallel: bool = False, imagegen: bool = False) -> None:
+    def __init__(self, parallel: bool = False, imagegen: bool = False, refuse: str | None = None) -> None:
         self.requests: list[dict] = []
+        # The account of every request, and the one this backend refuses to serve.
+        self.accounts: list[str] = []
+        self.refuse = refuse
         # What the bridge sent to the add-in's image endpoint, and the picture drawn.
         self.drawings: list[tuple[dict, dict]] = []
         self.drawn = base64.b64encode(png(12, 8)).decode()
@@ -163,6 +171,14 @@ class FakeExcelBackend:
             self.drawings.append((dict(request.headers), await request.json()))
             return JSONResponse({"created": 1, "background": "opaque", "output_format": "png",
                                  "data": [{"b64_json": self.drawn}]})
+
+        @app.middleware("http")
+        async def check_sign_in(request: Request, call_next):
+            account = request.headers.get("chatgpt-account-id", "")
+            self.accounts.append(account)
+            if account == self.refuse:
+                return JSONResponse({"error": {"message": "not for this client"}}, status_code=401)
+            return await call_next(request)
 
         @app.post("/basispoints/api/responses")
         async def responses(request: Request):
@@ -348,6 +364,8 @@ def main() -> int:
     parser.add_argument("--images", action="store_true", help="also attach a picture")
     parser.add_argument("--parallel", action="store_true", help="answer with two tool calls at once")
     parser.add_argument("--imagegen", action="store_true", help="answer with a call to Codex's image tool")
+    parser.add_argument("--codex-login", nargs="?", const="accepted", choices=["accepted", "refused"],
+                        help="also sign Codex in with ChatGPT; `refused` makes the backend turn it down")
     parser.add_argument("--timeout", type=int, default=900, help="seconds for each long step")
     parser.add_argument("launcher", nargs=argparse.REMAINDER)
     args = parser.parse_args()
@@ -361,12 +379,18 @@ def main() -> int:
     webview = write_webview_session(root / "webview", time.time() + 3 * 86400, account="e2e-account")
     project = root / "project"
     project.mkdir()
-    backend = FakeExcelBackend(parallel=args.parallel, imagegen=args.imagegen)
+    # Never whoever runs this: a made-up Codex sign-in, or none at all.
+    codex_auth = root / "codex-login" / "auth.json"
+    if args.codex_login:
+        write_codex_login(codex_auth, time.time() + 3 * 86400, account="e2e-codex-account")
+    backend = FakeExcelBackend(parallel=args.parallel, imagegen=args.imagegen,
+                               refuse="e2e-codex-account" if args.codex_login == "refused" else None)
     server, port = start_server(backend.app)
 
     env = dict(os.environ)
     env.update(
         CODEX_HOME=str(root / "codex-home"),
+        EXCEL_BRIDGE_CODEX_AUTH=str(codex_auth),
         EXCEL_BRIDGE_HOME=str(root / "bridge-home"),
         GHCP_EXCEL_RESPONSES_URL=f"http://127.0.0.1:{port}/basispoints/api/responses",
         PYTHONPATH=USER_PYTHONPATH,
@@ -399,6 +423,15 @@ def main() -> int:
          "Codex's commands saw a different PYTHONPATH"),
         (not backend.unexpected, f"unexpected upstream paths: {backend.unexpected}"),
     ]
+    # Every request carries one sign-in: Codex's when it is there and taken, else the Excel one.
+    signed_in = "e2e-codex-account" if args.codex_login == "accepted" else "e2e-account"
+    served = backend.accounts
+    if args.codex_login == "refused":
+        checks.append((served[:1] == ["e2e-codex-account"] and served.count("e2e-codex-account") == 1,
+                       f"expected one try with the refused Codex sign-in first, got {served}"))
+        served = served[1:]
+    checks.append((bool(served) and set(served) == {signed_in},
+                   f"expected every request on {signed_in}, got {backend.accounts}"))
     if args.parallel and len(backend.requests) >= 2:
         replayed = [(item.get("type"), item.get("call_id") if item.get("type") == "function_call_output"
                      else item.get("id"))
@@ -426,8 +459,8 @@ def main() -> int:
              and drawing.get("background") in {"auto", "opaque"},
              f"the image request was not the add-in's: {drawing}"),
             (headers.get("authorization", "").startswith("Bearer ")
-             and headers.get("chatgpt-account-id") == "e2e-account",
-             "the image request did not carry the Excel session"),
+             and headers.get("chatgpt-account-id") == signed_in,
+             "the image request did not carry the sign-in"),
         ]
     if args.images:
         announced = "Pictures: sent to OpenAI"
@@ -440,7 +473,7 @@ def main() -> int:
             (len(backend.uploads) == 1, f"expected the picture uploaded once, got {len(backend.uploads)}"),
             (upload_headers.get("content-type", "").startswith("multipart/form-data")
              and upload_headers.get("authorization", "").startswith("Bearer ")
-             and upload_headers.get("chatgpt-account-id") == "e2e-account" and picture in upload,
+             and upload_headers.get("chatgpt-account-id") == signed_in and picture in upload,
              "the upload was not the add-in's"),
             (bool(sent) and all(len(parts) == 1 for parts in sent),
              f"expected the picture once in every request, got {[len(parts) for parts in sent]}"),

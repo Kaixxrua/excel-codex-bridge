@@ -262,11 +262,37 @@ def _fresh(status: dict, previous_expiry: float | None) -> bool:
     return previous_expiry is None or (value is not None and value > previous_expiry)
 
 
+_EXCEL_KEYS = (
+    ("HKEY_CLASSES_ROOT", r"Excel.Application"),
+    ("HKEY_LOCAL_MACHINE", r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\excel.exe"),
+    ("HKEY_CURRENT_USER", r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\excel.exe"),
+)
+
+
+def excel_installed() -> bool:
+    """False only when Windows clearly has no Excel; opening the workbook would ask for an app."""
+    try:
+        import winreg
+    except ImportError:
+        return True
+    for hive, key in _EXCEL_KEYS:
+        try:
+            winreg.CloseKey(winreg.OpenKey(getattr(winreg, hive), key))
+            return True
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return True
+    return False
+
+
 def enabled_by_default(reader: SessionReader) -> bool:
     return (
         sys.platform == "win32"
-        and reader.method == "webview2-localstorage-leveldb"
+        and reader.excel_method == "webview2-localstorage-leveldb"
+        and reader.login != "codex"
         and os.environ.get(ENV_SWITCH, "1").strip().lower() not in {"0", "false", "no", "off"}
+        and excel_installed()
     )
 
 
@@ -365,6 +391,9 @@ class SessionKeeper:
         """Refresh through Excel if due; True when an attempt was made."""
         status = self.signin.reader.refresh(force=True)
         if not needs_refresh(status):
+            return False
+        if status.get("source") == "codex" and usable(status):
+            # Codex's sign-in is in use; Excel is only the fallback.
             return False
         now = self.signin.clock()
         if self._last_attempt is not None and now - self._last_attempt < self.retry_after:

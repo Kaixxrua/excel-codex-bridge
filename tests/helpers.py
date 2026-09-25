@@ -88,3 +88,18 @@ def write_webview_session(root: Path, exp: float, account: str = "account-id") -
     db = webview_db(root)
     (db / "000003.log").write_bytes(log_file([write_batch([(SESSION_KEY, value)])]))
     return root
+
+
+def write_codex_login(path: Path, exp: float, account: str | None = "codex-account", **claims) -> Path:
+    """Write a Codex auth.json holding a ChatGPT sign-in, like `codex login` does."""
+    auth = {"chatgpt_account_id": account or "claims-account", **claims}
+    tokens = {
+        "id_token": jwt_with_exp(exp),
+        "access_token": jwt_with_exp(exp, **{"https://api.openai.com/auth": auth}),
+        "refresh_token": "refresh-not-used",
+    }
+    if account:
+        tokens["account_id"] = account
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"auth_mode": "chatgpt", "OPENAI_API_KEY": None, "tokens": tokens}))
+    return path

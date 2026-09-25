@@ -19,6 +19,7 @@ import urllib.request
 from pathlib import Path
 
 from . import __version__, codex_config, desktop_config, excel_signin, excel_upstream, images, updates
+from . import session
 from .session import SessionReader
 
 
@@ -26,29 +27,43 @@ def _print(message: str = "") -> None:
     print(message, flush=True)
 
 
+_SIGN_IN_ADVICE = {
+    "auto": "Sign in to Codex with ChatGPT (`codex login`), or run `excel-codex login` / "
+    "open Excel's ChatGPT add-in pane and sign in.",
+    "codex": "Sign in to Codex with ChatGPT: `codex login`.",
+    "excel": "Run `excel-codex login`, or open Excel's ChatGPT add-in pane and sign in.",
+}
+
+
 def _describe_session(status: dict) -> tuple[bool, str]:
+    advice = _SIGN_IN_ADVICE.get(status.get("login") or "auto", _SIGN_IN_ADVICE["auto"])
     if not status.get("configured"):
         error = status.get("error") or "no session found"
-        return False, (
-            f"No usable ChatGPT Excel session ({error}).\n"
-            "  -> Run `excel-codex login`, or open Excel's ChatGPT add-in pane and sign in."
-        )
-    expires_at = status.get("expires_at")
+        return False, f"No usable ChatGPT sign-in ({error}).\n  -> {advice}"
+    source = status.get("source")
+    name = session.NAMES.get(source or "", "the ChatGPT session")
     if status.get("expired"):
-        return False, (
-            "The cached ChatGPT Excel session has expired.\n"
-            "  -> Run `excel-codex login`, or open the ChatGPT add-in pane in Excel once."
-        )
+        return False, f"{name[0].upper()}{name[1:]} has expired.\n  -> {advice}"
+    where = f" ({status.get('codex_auth')})" if source == "codex" else ""
+    message = f"Using {name}{where}"
+    expires_at = status.get("expires_at")
     if isinstance(expires_at, (int, float)):
         local = _dt.datetime.fromtimestamp(expires_at).strftime("%Y-%m-%d %H:%M")
         hours = (expires_at - time.time()) / 3600
-        return True, f"ChatGPT Excel session found; expires {local} (in {hours:.1f} h)."
-    return True, "ChatGPT Excel session found."
+        message += f"; expires {local} (in {hours:.1f} h)"
+    message += "."
+    notes = status.get("notes")
+    if source == "excel" and status.get("login") == "auto" and isinstance(notes, str) and notes:
+        message += f"\n  Not using Codex's sign-in: {notes.removeprefix('codex: ')}"
+    return True, message
 
 
-def _reader(args) -> SessionReader:
+def _reader(args, *, login: str | None = None) -> SessionReader:
     webview_dir = getattr(args, "webview_dir", None)
-    return SessionReader(webview_root=Path(webview_dir).expanduser() if webview_dir else None)
+    return SessionReader(
+        webview_root=Path(webview_dir).expanduser() if webview_dir else None,
+        login=login or getattr(args, "login", None),
+    )
 
 
 def _apply_proxy(args) -> None:
@@ -240,7 +255,7 @@ def cmd_status(args) -> int:
 
 
 def cmd_login(args) -> int:
-    reader = _reader(args)
+    reader = _reader(args, login="excel")
     status = reader.refresh(force=True)
     ok, message = _describe_session(status)
     _print(message)
@@ -362,6 +377,8 @@ def cmd_codex(args, codex_args: list[str]) -> int:
     ]
     if args.webview_dir:
         serve_cmd += ["--webview-dir", args.webview_dir]
+    if args.login:
+        serve_cmd += ["--login", args.login]
     if args.no_auto_signin:
         serve_cmd.append("--no-auto-signin")
     popen_kwargs: dict = {"stdin": subprocess.PIPE, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
@@ -543,6 +560,12 @@ def _parser() -> argparse.ArgumentParser:
         "--webview-dir",
         help="Excel WebView2 root (the ...\\Microsoft\\Office folder); for WSL or custom installs",
     )
+    common.add_argument(
+        "--login",
+        choices=session.LOGINS,
+        help="which ChatGPT sign-in to use: auto (Codex's, else the Excel add-in's; the default), "
+        f"codex or excel (default: ${session.LOGIN_ENV} or auto)",
+    )
 
     auto = argparse.ArgumentParser(add_help=False)
     auto.add_argument(
@@ -553,7 +576,7 @@ def _parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="excel-codex",
-        description="Run Codex on your own ChatGPT Excel add-in session, locally.",
+        description="Run Codex through the ChatGPT Excel add-in's backend on your own ChatGPT sign-in, locally.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command")
@@ -591,7 +614,7 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--log-file", help=argparse.SUPPRESS)
     serve.add_argument("--exit-with-stdin", action="store_true", help=argparse.SUPPRESS)
 
-    sub.add_parser("status", parents=[common], help="check the cached Excel session")
+    sub.add_parser("status", parents=[common], help="show which ChatGPT sign-in the bridge would use")
 
     login = sub.add_parser(
         "login", parents=[common, auto], help="open Excel's ChatGPT pane to sign in or refresh (Windows)"

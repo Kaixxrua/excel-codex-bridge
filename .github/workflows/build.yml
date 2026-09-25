@@ -67,6 +67,10 @@ jobs:
         run: python tests/e2e/run_e2e.py --imagegen -- ./excel-codex.sh
       - name: e2e (excel-codex.sh desktop, image tool)
         run: python tests/e2e/run_e2e.py --desktop --imagegen -- ./excel-codex.sh
+      - name: e2e (excel-codex.sh, Codex's sign-in)
+        run: python tests/e2e/run_e2e.py --codex-login -- ./excel-codex.sh
+      - name: e2e (excel-codex.sh desktop, Codex's sign-in refused)
+        run: python tests/e2e/run_e2e.py --desktop --codex-login refused -- ./excel-codex.sh
 
   windows:
     needs: test
@@ -106,6 +110,10 @@ jobs:
         run: python tests/e2e/run_e2e.py --imagegen -- dist/excel-codex/excel-codex.exe
       - name: e2e (excel-codex.exe desktop, image tool)
         run: python tests/e2e/run_e2e.py --desktop --imagegen -- dist/excel-codex/excel-codex.exe
+      - name: e2e (excel-codex.exe, Codex's sign-in)
+        run: python tests/e2e/run_e2e.py --codex-login -- dist/excel-codex/excel-codex.exe
+      - name: e2e (excel-codex.exe desktop, Codex's sign-in refused)
+        run: python tests/e2e/run_e2e.py --desktop --codex-login refused -- dist/excel-codex/excel-codex.exe
       - name: e2e (excel-codex.cmd)
         run: python tests/e2e/run_e2e.py -- excel-codex.cmd
 
@@ -172,6 +180,10 @@ jobs:
         run: python tests/e2e/run_e2e.py --images -- dist/excel-codex/excel-codex
       - name: e2e (excel-codex desktop, pictures)
         run: python tests/e2e/run_e2e.py --desktop --images -- dist/excel-codex/excel-codex
+      - name: e2e (excel-codex, Codex's sign-in)
+        run: python tests/e2e/run_e2e.py --codex-login -- dist/excel-codex/excel-codex
+      - name: e2e (excel-codex desktop, Codex's sign-in refused)
+        run: python tests/e2e/run_e2e.py --desktop --codex-login refused -- dist/excel-codex/excel-codex
 
       - name: Package
         run: |

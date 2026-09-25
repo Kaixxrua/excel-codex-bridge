@@ -10,23 +10,28 @@
 > This explicitly opted-in mode transfers your session to your trusted server.
 > The local-only / OpenAI-only guarantees below describe the default local mode, not this remote mode.
 
-Run the [Codex CLI](https://github.com/openai/codex) and the Codex desktop app on the ChatGPT
-session that the **ChatGPT add-in for Excel** keeps on *your own* computer. One command (or a
-double-click) starts a local bridge and Codex together; quitting stops the bridge. When a sign-in
-is needed, it opens Excel's ChatGPT pane for you and the add-in signs in itself. Nothing listens
-beyond loopback, and the session stays in memory and only goes to OpenAI.
+Run the [Codex CLI](https://github.com/openai/codex) and the Codex desktop app on a ChatGPT
+sign-in already on *your own* computer. One command (or a double-click) starts a local bridge and
+Codex together; quitting stops the bridge. By default it uses Codex's own sign-in
+(`codex login`), so Excel need not be installed; if the backend refuses it, it falls back to the
+session the **ChatGPT add-in for Excel** caches, opening Excel's ChatGPT pane for you when a
+sign-in is needed. See [Sign-in](#sign-in). Nothing listens beyond loopback, and the session
+stays in memory and only goes to OpenAI.
 
 ## How it works
 
 ```
 Codex CLI ──(Responses API, 127.0.0.1)──▶ excel-codex-bridge ──(HTTPS)──▶ bps.openai.com
                                                  ▲                      (ChatGPT for Excel backend)
-                        reads the add-in's locally cached sign-in, read-only, never persisted
+              reads a ChatGPT sign-in already here (Codex's own, or the add-in's), read-only, never persisted
 ```
 
-- **No login of its own.** No OAuth, no passwords. You sign in inside Excel's ChatGPT pane
-  (which the tool [opens for you](#automatic-sign-in-windows) when needed); the bridge only reads
-  the session the add-in caches in its local WebView2 storage (`bps_auth_tokens`).
+- **No login of its own.** No OAuth, no passwords, and it never refreshes or writes a token. It
+  only reads a ChatGPT sign-in already on this machine — Codex's own first (`codex login`, kept in
+  `~/.codex/auth.json`), then the session the Excel add-in caches in its WebView2 storage
+  (`bps_auth_tokens`). With the add-in's, you sign in inside its ChatGPT pane (which the tool
+  [opens for you](#automatic-sign-in-windows) when needed). Which one it takes, and how it falls
+  back, is under [Sign-in](#sign-in).
 - **The token stays in memory.** It is never written to disk or uploaded, and is only sent to
   `bps.openai.com`. The log holds request lines and error types, never prompts or tokens.
 - **Local only.** Loopback addresses only. Requests from non-loopback peers, with a non-loopback
@@ -50,15 +55,57 @@ Codex CLI ──(Responses API, 127.0.0.1)──▶ excel-codex-bridge ──(HT
 
 ## Requirements
 
-- Windows 10/11 with **Microsoft 365 desktop Excel** and the **ChatGPT** add-in (publisher
-  OpenAI). No need to sign in first: the first run opens Excel and walks you through it. If the
-  add-in is not installed, Excel usually offers to trust and install it; otherwise add it from
-  Home → Add-ins. Your ChatGPT plan must include the add-in.
-  On a Mac, see [macOS](#macos--wsl-experimental).
 - Codex CLI: `npm install -g @openai/codex`.
+- One ChatGPT sign-in already on this machine, either (see [Sign-in](#sign-in)):
+  - **Codex's own sign-in** (the default, no Excel needed): run `codex login` once with ChatGPT,
+    on any OS.
+  - **The Excel add-in's session** (the fallback): Windows 10/11 with **Microsoft 365 desktop
+    Excel** and the **ChatGPT** add-in (publisher OpenAI); on a Mac see
+    [macOS](#macos--wsl-experimental). No need to sign in first — the tool opens Excel and walks
+    you through it when needed. If the add-in is not installed, Excel usually offers to trust and
+    install it; otherwise add it from Home → Add-ins. Your ChatGPT plan must include the add-in.
 - Python 3.10+ only when running from source ([python.org](https://www.python.org/downloads/);
   tick *Add python.exe to PATH*); the no-install build does not need it.
 - Network access to `bps.openai.com` (see [Proxy](#proxy)).
+
+## Sign-in
+
+The bridge needs a ChatGPT sign-in already on this machine. Two are possible, chosen in order by
+default:
+
+1. **Codex's own sign-in** (`codex login`, kept in `$CODEX_HOME/auth.json`, default
+   `~/.codex/auth.json`). With this one Excel need not be installed, and it works on any OS.
+2. **The session the Excel add-in caches** (the fallback). Used when Codex is not signed in with
+   ChatGPT, its sign-in has expired, or the backend refuses it; a sign-in then
+   [opens Excel's pane](#automatic-sign-in-windows).
+
+Pick one with `--login` or the `EXCEL_BRIDGE_LOGIN` environment variable:
+
+| Value | Meaning |
+| --- | --- |
+| `auto` (default) | Try Codex's sign-in, then the Excel add-in's |
+| `codex` | Only Codex's sign-in (Excel is never touched) |
+| `excel` | Only the Excel add-in's session (the original behaviour) |
+
+- **When it falls back** (in `auto` only): Codex is not signed in / uses an API key / its sign-in
+  has expired or expires within 5 minutes / the backend answers 401 or 403. After a 401/403 it
+  retries once on the Excel session and then stays on Excel until `auth.json` changes (e.g. you run
+  `codex login` again), when it tries Codex once more.
+- `EXCEL_BRIDGE_CODEX_AUTH` points at a different `auth.json` (otherwise `$CODEX_HOME`, then
+  `~/.codex`).
+- When a sign-in is expired or unusable, `excel-codex status` says which one is in use, when it
+  expires, and how to renew it (`codex login` for Codex's; `excel-codex login` for Excel's).
+- The bridge never refreshes or writes a token; when Codex's expires, run `codex login` yourself
+  (in `auto` it falls back to Excel meanwhile).
+- [SUB2API remote sync](docs/sub2api.en.md) only ever sends the Excel add-in's session; Codex's
+  sign-in never leaves this machine.
+
+> **Note:** whether the Excel backend accepts Codex CLI's own sign-in token is untested against
+> the real backend. If it does not, `auto` falls back to the Excel session; for the verified path
+> only, use `--login excel`.
+
+This idea comes from [MIKUbiu/bps-local](https://github.com/MIKUbiu/bps-local); this project is a
+separate implementation of it, see [Credits and license](#credits-and-license).
 
 ## Quick start (Windows)
 
@@ -90,13 +137,14 @@ excel-codex --model gpt-5.6-terra-excel       pick another model
 excel-codex -- -c model_reasoning_effort=high set reasoning effort
 excel-codex -- exec "add a table of contents to the README"
 excel-codex -- resume --last                  resume the last session
-excel-codex status                            is the session usable, and when does it expire
+excel-codex status                            which sign-in is used, is it usable, when it expires
+excel-codex --login codex                      use Codex's own sign-in only (never touch Excel)
 excel-codex login                             open Excel's ChatGPT pane to sign in or refresh
 excel-codex desktop                           route the Codex desktop app / IDE extension here
 ```
 
-Launcher options: `--model`, `--proxy`, `--port`, `--codex <path>`, `--webview-dir <dir>`,
-`--skip-session-check`, `--no-auto-signin`.
+Launcher options: `--login <auto|codex|excel>`, `--model`, `--proxy`, `--port`, `--codex <path>`,
+`--webview-dir <dir>`, `--skip-session-check`, `--no-auto-signin`.
 
 ## Models
 
@@ -324,6 +372,8 @@ running from source, `git pull` is enough.
 
 | Variable | Purpose |
 | --- | --- |
+| `EXCEL_BRIDGE_LOGIN` | Which sign-in to use: `auto` (default) / `codex` / `excel` (same as `--login`), see [Sign-in](#sign-in) |
+| `EXCEL_BRIDGE_CODEX_AUTH` | Path to Codex's `auth.json`; default `$CODEX_HOME/auth.json`, then `~/.codex/auth.json` |
 | `EXCEL_BRIDGE_PROXY` | Outbound proxy (same as `--proxy`) |
 | `EXCEL_BRIDGE_HOME` | State folder for the model catalog JSON, `bridge.log`, the sign-in workbook, and `tool-calls.sqlite3`, which lets earlier tool calls replay exactly after a restart (kept 60 days). Default `%LOCALAPPDATA%\excel-codex-bridge` or `~/.excel-codex-bridge` |
 | `EXCEL_BRIDGE_AUTO_SIGNIN` | `0` keeps the tool from opening Excel (same as `--no-auto-signin`) |
@@ -350,5 +400,13 @@ The Excel session reader and the Basispoints protocol adapter are extracted from
 [Nonary/ghcp_proxy](https://github.com/Nonary/ghcp_proxy) (Unlicense, based on commit `ad23ce2`;
 original license in [UPSTREAM-LICENSE](UPSTREAM-LICENSE)). This project is released under the
 [Unlicense](LICENSE) as well.
+
+**The idea of using Codex's own sign-in to reach the Excel backend (so Excel need not be
+installed)** comes from [MIKUbiu/bps-local](https://github.com/MIKUbiu/bps-local) (Unlicense) —
+thanks to MIKUbiu for it. This project is a separate implementation: it wires that sign-in in as an
+optional source of the existing bridge and fallback, with our own code. bps-local's Basispoints
+protocol code derives from [hloolx/codex2api](https://github.com/hloolx/codex2api) (MIT, ported via
+[ranxi2001/sub2api](https://github.com/ranxi2001/sub2api)); our own such code comes from ghcp_proxy
+above.
 
 Thanks to the [LINUX DO](https://linux.do) community.

@@ -32,7 +32,8 @@ def status(expires_in: float | None, *, configured: bool = True) -> dict:
 
 
 class FakeReader:
-    method = "webview2-localstorage-leveldb"
+    excel_method = "webview2-localstorage-leveldb"
+    login = "auto"
 
     def __init__(self, *statuses: dict) -> None:
         self.statuses = list(statuses)
@@ -167,12 +168,22 @@ class SignInTests(unittest.TestCase):
 
     def test_disabled_off_windows_and_by_environment(self):
         reader = FakeReader(status(3600))
-        with mock.patch.object(excel_signin.sys, "platform", "win32"):
-            self.assertTrue(excel_signin.ExcelSignIn(reader).enabled)
-            with mock.patch.dict(os.environ, {excel_signin.ENV_SWITCH: "0"}):
+        with mock.patch.object(excel_signin, "excel_installed", return_value=True):
+            with mock.patch.object(excel_signin.sys, "platform", "win32"):
+                self.assertTrue(excel_signin.ExcelSignIn(reader).enabled)
+                with mock.patch.dict(os.environ, {excel_signin.ENV_SWITCH: "0"}):
+                    self.assertFalse(excel_signin.ExcelSignIn(reader).enabled)
+            with mock.patch.object(excel_signin.sys, "platform", "linux"):
                 self.assertFalse(excel_signin.ExcelSignIn(reader).enabled)
-        with mock.patch.object(excel_signin.sys, "platform", "linux"):
-            self.assertFalse(excel_signin.ExcelSignIn(reader).enabled)
+
+    def test_disabled_without_excel_or_when_only_codex_signs_in(self):
+        reader = FakeReader(status(3600))
+        with mock.patch.object(excel_signin.sys, "platform", "win32"):
+            with mock.patch.object(excel_signin, "excel_installed", return_value=False):
+                self.assertFalse(excel_signin.ExcelSignIn(reader).enabled)
+            with mock.patch.object(excel_signin, "excel_installed", return_value=True):
+                reader.login = "codex"
+                self.assertFalse(excel_signin.ExcelSignIn(reader).enabled)
 
 
 class KeeperTests(unittest.TestCase):
@@ -191,6 +202,19 @@ class KeeperTests(unittest.TestCase):
         self.assertEqual(excel.opened[0][1], True)
         self.assertFalse(keeper.check_once())  # retried at most every retry_after
         self.assertEqual(len(excel.opened), 1)
+
+    def test_a_usable_codex_sign_in_leaves_excel_closed(self):
+        excel = FakeExcel()
+        # Even with little time left: Excel is only the fallback.
+        keeper = self.keeper(excel, FakeReader({**status(3 * 3600), "source": "codex"}))
+        self.assertFalse(keeper.check_once())
+        self.assertEqual(excel.opened, [])
+
+    def test_an_expired_codex_sign_in_falls_back_to_excel(self):
+        excel = FakeExcel()
+        keeper = self.keeper(excel, FakeReader({**status(0), "source": "codex"}, status(10 * 86400)))
+        self.assertTrue(keeper.check_once())
+        self.assertEqual(excel.opened[0][1], False)
 
     def test_missing_session_opens_excel_for_the_user(self):
         excel = FakeExcel()

@@ -169,7 +169,9 @@ def main(argv: list[str] | None = None) -> int:
             init_secrets(args.directory)
             print("Created api-key and admin-key; keep them private and out of Git.")
         elif args.command == "push-session":
-            reader = SessionReader(webview_root=args.webview_dir)
+            # Only the Excel add-in's session goes to the sidecar, as before; Codex's
+            # own sign-in stays on this computer.
+            reader = SessionReader(webview_root=args.webview_dir, login="excel")
             while True:
                 try:
                     print(json.dumps(push_session(args, reader)), flush=True)
