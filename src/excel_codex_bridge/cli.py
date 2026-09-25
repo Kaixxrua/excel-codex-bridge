@@ -413,6 +413,14 @@ def _undo_on_exit(undo):
     return handler
 
 
+# The desktop app reads its model list only at startup, so it keeps offering
+# the Excel models after the config is restored; requests then go to OpenAI.
+_REOPEN_AFTER_RESTORE = (
+    "  Quit and reopen the Codex desktop app too: until then it still lists the *-excel\n"
+    "  models, and they fail there with \"not supported when using Codex with a ChatGPT account\"."
+)
+
+
 def cmd_desktop(args) -> int:
     config = desktop_config.config_path()
     if args.off:
@@ -422,6 +430,8 @@ def cmd_desktop(args) -> int:
             _print(f"Could not update {config}: {exc}")
             return 1
         _print(f"Restored {config}." if changed else f"Nothing to undo in {config}.")
+        if changed:
+            _print(_REOPEN_AFTER_RESTORE)
         return 0
 
     _apply_proxy(args)
@@ -449,7 +459,8 @@ def cmd_desktop(args) -> int:
     profile = desktop_config.profile_override(config.read_text(encoding="utf-8-sig"))
     if profile:
         _print(f"  Note: your active profile '{profile}' sets its own model and may override this.")
-    _print("  Restart the Codex desktop app (or reload the IDE window) to pick it up.")
+    _print("  Fully quit and reopen the Codex desktop app (or reload the IDE window) to pick it up,")
+    _print("  then start a new conversation: earlier ones keep the account they were started with.")
     if args.keep_config:
         _print("  Keep this window open. `excel-codex desktop --off` puts your config back.")
     else:
@@ -464,6 +475,7 @@ def cmd_desktop(args) -> int:
         if not args.keep_config:
             undo()
             _print(f"Restored {config}.")
+            _print(_REOPEN_AFTER_RESTORE)
     del keep
     return 0
 

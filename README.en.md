@@ -145,8 +145,9 @@ the bridge for as long as you need it:
 1. Double-click **`excel-codex-desktop.cmd`** from the release zip (or run `excel-codex desktop`).
    It checks the session (signing in if needed), points `config.toml` at the bridge and runs the
    bridge on `127.0.0.1:8765`.
-2. **Restart the Codex desktop app** (or reload the IDE window); the model list shows the
-   `*-excel` models.
+2. **Fully quit and reopen the Codex desktop app** (or reload the IDE window); the model list
+   shows the `*-excel` models. **Start a new conversation** with them: conversations started
+   earlier keep the account they were started with.
 3. Keep that window open while you work (minimizing is fine). **Closing it or pressing Ctrl+C
    restores `config.toml` exactly.**
 
@@ -159,6 +160,22 @@ Details:
 - To keep it on: `excel-codex desktop --keep-config`, and later `excel-codex desktop --off`
   (also the fix if the window was killed before it could restore the config).
 - Other model: `excel-codex desktop --model gpt-5.6-terra-excel`; other port: `--port`.
+
+**Error `The '…-excel' model is not supported when using Codex with a ChatGPT account`.** The
+conversation's request did not go through the bridge; it went straight to OpenAI's own Codex
+backend. The desktop app reads `config.toml` when a conversation starts to decide where its
+requests go, and the conversation keeps that choice. The model list, though, is read only when
+the desktop app starts. So the list can still show the `*-excel` models while the conversation is
+tied to your ChatGPT account. Common causes:
+
+- The bridge window was closed (so `config.toml` was restored) but the desktop app was not
+  restarted.
+- The conversation was started before desktop mode was on; switching it to an Excel model does
+  not help.
+- A tool such as Cockpit Tools switched Codex back to a ChatGPT account.
+
+Fix: open `excel-codex-desktop.cmd`, fully quit and reopen the desktop app, then **start a new
+conversation**.
 
 Fully manual alternative: run `excel-codex serve` and add the output of `excel-codex print-config`
 to `config.toml`; remove those lines to go back.

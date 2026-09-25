@@ -127,7 +127,8 @@ TLS 证书校验始终开启。Codex 到桥接走 `127.0.0.1`，启动器会自�
 
 1. 双击免安装包里的 **`excel-codex-desktop.cmd`**（或运行 `excel-codex desktop`），
    它会检查会话（需要时自动登录）、把 `config.toml` 指向桥接，并在 `127.0.0.1:8765` 上运行桥接。
-2. **重启 Codex 桌面版**（IDE 插件则重新加载窗口），模型列表里就是 `*-excel` 模型。
+2. **完全退出再打开 Codex 桌面版**（IDE 插件则重新加载窗口），模型列表里就是 `*-excel` 模型。
+   请**新建对话**来用：之前建的对话会一直沿用当时的账号。
 3. 用的时候保持这个窗口开着（可以最小化）。**关掉窗口或按 Ctrl+C，`config.toml` 按原样恢复。**
 
 细节：
@@ -138,6 +139,17 @@ TLS 证书校验始终开启。Codex 到桥接走 `127.0.0.1`，启动器会自�
 - 想长期保持：`excel-codex desktop --keep-config`，之后用 `excel-codex desktop --off` 恢复
   （窗口意外被杀、配置没还原时也用它）。
 - 换模型：`excel-codex desktop --model gpt-5.6-terra-excel`；换端口：`--port`。
+
+**报错 `The '…-excel' model is not supported when using Codex with a ChatGPT account`**：
+这条对话的请求没有经过桥接，直接发给了 OpenAI 官方的 Codex 后端。桌面版在新建对话时读取
+`config.toml` 决定发往哪里，这个对话之后一直沿用；模型列表却只在桌面版启动时读一次。所以列表里
+还有 `*-excel` 模型，对话却绑在 ChatGPT 账号上。常见原因：
+
+- 桥接窗口已经关了（`config.toml` 已恢复），桌面版却没重启；
+- 这条对话是在开启桌面版模式之前建的，在里面换成 Excel 模型也没用；
+- Cockpit Tools 这类工具把 Codex 切回了 ChatGPT 账号。
+
+解决：打开 `excel-codex-desktop.cmd`，完全退出桌面版再打开，然后**新建对话**。
 
 也可以全手动：`excel-codex serve` 常驻桥接，再把 `excel-codex print-config` 输出的片段加进
 `config.toml`，不用时删掉。
