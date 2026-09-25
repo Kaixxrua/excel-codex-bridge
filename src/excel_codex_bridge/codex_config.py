@@ -98,7 +98,8 @@ def catalog_payload() -> dict[str, object]:
                 "auto_compact_token_limit": auto_compact,
                 "effective_context_window_percent": 95,
                 "experimental_supported_tools": [],
-                "input_modalities": ["text", "image"],
+                # Codex desktop refuses pasted pictures for a model without "image" here.
+                "input_modalities": list(caps["input_modalities"]),
                 "supports_search_tool": False,
             }
         )

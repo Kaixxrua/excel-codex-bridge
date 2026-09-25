@@ -226,6 +226,17 @@ Pictures go to `bps.openai.com` only, like the rest of the request: no third par
 image host and nothing to configure. Uploads use the same network settings as requests (including
 `--proxy`). OpenAI keeps uploaded pictures as it keeps files you upload in the add-in.
 
+**The desktop app says "This model does not support image inputs".** The desktop app blocks the
+picture itself; no request is sent. It decides from the model catalog, and it reads the catalog only
+at startup:
+
+- Versions 0.3.1 and earlier wrote a catalog that marked the Excel models as text-only. After
+  upgrading, start desktop mode again (`excel-codex-desktop.cmd` or `excel-codex desktop`), then
+  fully quit the desktop app (quit from the tray, or `Cmd+Q` on macOS) and open it again.
+- When a tool such as Cockpit Tools manages Codex, that tool writes the model catalog, not this
+  bridge. Turn on image input for the `*-excel` models in its model provider settings (Cockpit 1.3.57
+  and earlier leave it off by default).
+
 ## Limitations
 
 - No parallel tool calls; one tool at a time.
