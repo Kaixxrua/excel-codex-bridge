@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import zlib
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import FastAPI, Request
@@ -176,6 +177,38 @@ def _refused(response: Response) -> bool:
     return response.status_code in PICTURE_RETRY_STATUSES
 
 
+def _seconds(value: float | None) -> str:
+    if value is None:
+        return ""
+    return f" within {value / 60:g} minutes" if value >= 120 else f" within {value:g} s"
+
+
+def _request_error_response(exc: httpx.RequestError, timeout: httpx.Timeout) -> Response:
+    """Say which step of reaching the backend failed: Codex shows only this text."""
+    status, message = sse.upstream_request_error_status_and_message(exc)
+    kind = type(exc).__name__
+    detail = f"{kind}: {exc}" if str(exc).strip() else kind
+    host = urlsplit(excel_upstream.RESPONSES_URL).hostname or "the Excel backend"
+    check = "Check this computer's network or proxy (--proxy or EXCEL_BRIDGE_PROXY), then retry."
+    if isinstance(exc, httpx.ConnectTimeout):
+        message = f"Could not connect to {host}{_seconds(timeout.connect)} ({kind}). {check}"
+    elif isinstance(exc, (httpx.ConnectError, httpx.ProxyError)):
+        message = f"Could not connect to {host} ({detail}). {check}"
+    elif isinstance(exc, httpx.WriteTimeout):
+        message = f"Sending the request to {host} stalled ({kind}). {check}"
+    elif isinstance(exc, httpx.PoolTimeout):
+        message = (
+            f"Too many requests to {host} were already running ({kind}). "
+            "Retry; if this keeps happening, restart the bridge."
+        )
+    elif isinstance(exc, httpx.ReadTimeout):
+        message = f"{host} took the request but sent nothing back{_seconds(timeout.read)} ({kind}). Retry."
+    else:
+        message = f"{message} ({detail})"
+    log.warning("upstream request failed: %s", detail)
+    return sse.openai_error_response(status, message)
+
+
 class Bridge:
     def __init__(self, reader: SessionReader, client_factory=build_upstream_client) -> None:
         self.reader = reader
@@ -265,9 +298,7 @@ class Bridge:
         try:
             upstream = await self.client.send(request, stream=True)
         except httpx.RequestError as exc:
-            status, message = sse.upstream_request_error_status_and_message(exc)
-            log.warning("upstream request failed: %s", type(exc).__name__)
-            return sse.openai_error_response(status, message)
+            return _request_error_response(exc, self.client.timeout)
         if upstream.status_code >= 400:
             try:
                 await upstream.aread()
@@ -344,9 +375,9 @@ class Bridge:
             except httpx.RemoteProtocolError as exc:
                 if attempt + 1 < NON_STREAMING_ATTEMPTS:
                     continue
-                return sse.openai_error_response(*sse.upstream_request_error_status_and_message(exc))
+                return _request_error_response(exc, self.client.timeout)
             except httpx.RequestError as exc:
-                return sse.openai_error_response(*sse.upstream_request_error_status_and_message(exc))
+                return _request_error_response(exc, self.client.timeout)
             finally:
                 if upstream is not None:
                     await upstream.aclose()

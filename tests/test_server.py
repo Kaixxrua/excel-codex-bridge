@@ -49,7 +49,8 @@ def text_stream(text: str) -> bytes:
 
 
 class BridgeHarness:
-    def __init__(self, handler, *, configured: bool = True, exp: float | None = None):
+    def __init__(self, handler, *, configured: bool = True, exp: float | None = None,
+                 timeout: httpx.Timeout = httpx.Timeout(5.0)):
         self.upstream_requests: list[httpx.Request] = []
 
         def record(request: httpx.Request) -> httpx.Response:
@@ -63,7 +64,7 @@ class BridgeHarness:
             )
         self.app = create_app(
             self.reader,
-            client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(record)),
+            client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(record), timeout=timeout),
         )
 
     def request(self, method: str, path: str, *, client_host="127.0.0.1", **kwargs) -> httpx.Response:
@@ -244,6 +245,30 @@ class ResponsesRouteTests(unittest.TestCase):
             "POST", "/v1/responses", json={"model": "gpt-5.6-sol-excel", "input": "hi", "stream": True}
         )
         self.assertEqual(response.status_code, 502)
+        self.assertIn("Could not connect to bps.openai.com (ConnectError: refused)", response.json()["error"]["message"])
+
+    def test_upstream_timeouts_say_which_step_timed_out(self):
+        cases = {
+            httpx.ConnectTimeout: "Could not connect to bps.openai.com within 30 s (ConnectTimeout). Check",
+            httpx.ReadTimeout: "sent nothing back within 10 minutes (ReadTimeout)",
+            httpx.PoolTimeout: "Too many requests",
+            httpx.WriteTimeout: "stalled (WriteTimeout). Check",
+        }
+        for error, expected in cases.items():
+            for stream in (True, False):
+                with self.subTest(error=error.__name__, stream=stream):
+                    def fail(request, error=error):
+                        raise error("", request=request)
+
+                    harness = BridgeHarness(
+                        fail, timeout=httpx.Timeout(connect=30.0, read=600.0, write=60.0, pool=30.0)
+                    )
+                    response = harness.request(
+                        "POST", "/v1/responses",
+                        json={"model": "gpt-5.6-sol-excel", "input": "hi", "stream": stream},
+                    )
+                    self.assertEqual(response.status_code, 504)
+                    self.assertIn(expected, response.json()["error"]["message"])
 
     def test_non_streaming_request_returns_completed_payload(self):
         harness = BridgeHarness(ok_stream)
