@@ -171,7 +171,7 @@ def _run_bridge(reader: SessionReader, args, *, host: str, port: int, quiet: boo
     keeper = excel_signin.SessionKeeper(_signin(reader, args))
     keeper.start()
     try:
-        uvicorn.run(
+        config = uvicorn.Config(
             create_app(reader),
             host=host,
             port=port,
@@ -184,6 +184,18 @@ def _run_bridge(reader: SessionReader, args, *, host: str, port: int, quiet: boo
             # got to put config.toml back. Cap the wait.
             timeout_graceful_shutdown=SHUTDOWN_GRACE_SECONDS,
         )
+        if not quiet:
+            # log_level hides uvicorn's startup chatter but also the request lines, which
+            # show whether Codex reaches the bridge at all (method, path and status only).
+            logging.getLogger("uvicorn.access").setLevel(logging.INFO)
+        # The rest is what uvicorn.run does: Ctrl+C is re-raised after shutdown.
+        server = uvicorn.Server(config)
+        try:
+            server.run()
+        except KeyboardInterrupt:
+            pass
+        if not server.started:
+            sys.exit(3)  # could not start, e.g. port taken
     finally:
         keeper.stop()
 

@@ -232,6 +232,8 @@ class DesktopShutdownTests(unittest.TestCase):
                 desktop.communicate()
         self.assertEqual(desktop.returncode, 0, output)
         self.assertEqual(config.read_text(), USER_CONFIG)
+        # Each request shows up in the window, so users can tell Codex reaches the bridge.
+        self.assertIn(b'"GET /healthz HTTP/1.1" 200', output)
 
 
 if __name__ == "__main__":

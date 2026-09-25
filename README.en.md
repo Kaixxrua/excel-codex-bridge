@@ -161,12 +161,13 @@ Details:
   (also the fix if the window was killed before it could restore the config).
 - Other model: `excel-codex desktop --model gpt-5.6-terra-excel`; other port: `--port`.
 
-**Error `The '…-excel' model is not supported when using Codex with a ChatGPT account`.** The
-conversation's request did not go through the bridge; it went straight to OpenAI's own Codex
-backend. The desktop app reads `config.toml` when a conversation starts to decide where its
-requests go, and the conversation keeps that choice. The model list, though, is read only when
-the desktop app starts. So the list can still show the `*-excel` models while the conversation is
-tied to your ChatGPT account. Common causes:
+**Error `The '…-excel' model is not supported when using Codex with a ChatGPT account`** (after
+signing out of Codex it becomes `401 Unauthorized: Missing bearer or basic authentication` for
+`api.openai.com/v1/responses`). The conversation's request did not go through the bridge; it went
+straight to OpenAI, so signing out does not help. The desktop app reads `config.toml` when a
+conversation starts to decide where its requests go, and the conversation keeps that choice. The
+model list, though, is read only when the desktop app starts. So the list can still show the
+`*-excel` models while the conversation is tied to OpenAI's own service. Common causes:
 
 - The bridge window was closed (so `config.toml` was restored) but the desktop app was not
   restarted.
@@ -174,8 +175,10 @@ tied to your ChatGPT account. Common causes:
   not help.
 - A tool such as Cockpit Tools switched Codex back to a ChatGPT account.
 
-Fix: open `excel-codex-desktop.cmd`, fully quit and reopen the desktop app, then **start a new
-conversation**.
+Fix: open `excel-codex-desktop.cmd`, fully quit the desktop app (File → Quit, or quit from the
+tray; after closing the window it may still run in the background) and reopen it, then **start a
+new conversation**. Each message then shows a line like `"POST /v1/responses HTTP/1.1" 200` in the
+bridge window (0.4.2 and later); if nothing shows up, the request still bypasses the bridge.
 
 Fully manual alternative: run `excel-codex serve` and add the output of `excel-codex print-config`
 to `config.toml`; remove those lines to go back.

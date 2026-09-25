@@ -140,16 +140,20 @@ TLS 证书校验始终开启。Codex 到桥接走 `127.0.0.1`，启动器会自�
   （窗口意外被杀、配置没还原时也用它）。
 - 换模型：`excel-codex desktop --model gpt-5.6-terra-excel`；换端口：`--port`。
 
-**报错 `The '…-excel' model is not supported when using Codex with a ChatGPT account`**：
-这条对话的请求没有经过桥接，直接发给了 OpenAI 官方的 Codex 后端。桌面版在新建对话时读取
-`config.toml` 决定发往哪里，这个对话之后一直沿用；模型列表却只在桌面版启动时读一次。所以列表里
-还有 `*-excel` 模型，对话却绑在 ChatGPT 账号上。常见原因：
+**报错 `The '…-excel' model is not supported when using Codex with a ChatGPT account`**
+（在 Codex 里退出登录后会变成 `401 Unauthorized: Missing bearer or basic authentication`，
+地址是 `api.openai.com/v1/responses`）：这条对话的请求没有经过桥接，直接发给了 OpenAI 官方，
+所以退出登录解决不了。桌面版在新建对话时读取 `config.toml` 决定发往哪里，这个对话之后一直沿用；
+模型列表却只在桌面版启动时读一次。所以列表里还有 `*-excel` 模型，对话却绑在 OpenAI 官方服务上。
+常见原因：
 
 - 桥接窗口已经关了（`config.toml` 已恢复），桌面版却没重启；
 - 这条对话是在开启桌面版模式之前建的，在里面换成 Excel 模型也没用；
 - Cockpit Tools 这类工具把 Codex 切回了 ChatGPT 账号。
 
-解决：打开 `excel-codex-desktop.cmd`，完全退出桌面版再打开，然后**新建对话**。
+解决：打开 `excel-codex-desktop.cmd`，完全退出桌面版（文件 → 退出，或从托盘退出；只关窗口它可能
+还在后台运行）再打开，然后**新建对话**。发消息时桥接窗口里会出现 `"POST /v1/responses HTTP/1.1" 200`
+这样的一行（0.4.2 起）；没有就说明请求还是没经过桥接。
 
 也可以全手动：`excel-codex serve` 常驻桥接，再把 `excel-codex print-config` 输出的片段加进
 `config.toml`，不用时删掉。
