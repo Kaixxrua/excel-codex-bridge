@@ -257,6 +257,24 @@ at startup:
   bridge. Turn on image input for the `*-excel` models in its model provider settings (Cockpit 1.3.57
   and earlier leave it off by default).
 
+## Update check
+
+From 0.4.4 on, the tool checks GitHub in the background for a newer release (at most every 12 hours)
+and, if there is one, shows its version, what changed and the download link:
+
+- In the desktop-mode and `serve` windows: after startup, and whenever a release comes out while the
+  window stays open.
+- When `excel-codex` starts Codex: after Codex exits. A window opened by double-click then waits for
+  Enter before it closes.
+
+The request goes only to `api.github.com`, carries nothing but the version in its User-Agent, and
+uses the same proxy settings as the bridge. If GitHub cannot be reached, nothing is shown and nothing
+else changes. Set `EXCEL_BRIDGE_UPDATE_CHECK=0` to turn it off.
+
+To update, close any running bridge window and Codex, then extract the new release over the old folder
+(or into a new one). Settings and state are not kept in the install folder, so nothing is lost. When
+running from source, `git pull` is enough.
+
 ## Limitations
 
 - Tools run one at a time, not in parallel. Running commands (PowerShell / shell), editing files
@@ -285,6 +303,7 @@ at startup:
 | `EXCEL_BRIDGE_PROXY` | Outbound proxy (same as `--proxy`) |
 | `EXCEL_BRIDGE_HOME` | State folder for the model catalog JSON, `bridge.log`, the sign-in workbook, and `tool-calls.sqlite3`, which lets earlier tool calls replay exactly after a restart (kept 60 days). Default `%LOCALAPPDATA%\excel-codex-bridge` or `~/.excel-codex-bridge` |
 | `EXCEL_BRIDGE_AUTO_SIGNIN` | `0` keeps the tool from opening Excel (same as `--no-auto-signin`) |
+| `EXCEL_BRIDGE_UPDATE_CHECK` | `0` turns off the update check |
 | `CODEX_HOME` | Codex config folder whose `config.toml` `desktop` edits. Default `~/.codex` |
 | `GHCP_EXCEL_WEBVIEW2_DATA_DIR` | Windows WebView2 data root (same as `--webview-dir`) |
 | `GHCP_EXCEL_WEBKIT_WEBSITE_DATA_DIR` | macOS WebKit data folder |

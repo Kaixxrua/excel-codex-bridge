@@ -218,6 +218,19 @@ Codex 里贴的截图、`codex -i 图片.png` 和模型用 `view_image` 看图�
 - 用 Cockpit Tools 这类工具管理 Codex 时，模型目录是它生成的，不是本工具。在它的模型供应商设置
   里把 `*-excel` 模型的「图片输入」打开（Cockpit 1.3.57 及更早默认关闭）。
 
+## 检查更新
+
+从 0.4.4 起，程序会在后台查 GitHub 上有没有新版本（最多每 12 小时一次），有就显示版本号、更新内容和下载链接：
+
+- 桌面版模式和 `serve` 的窗口：启动后显示；窗口一直开着时，新版本发布后也会显示。
+- 用 `excel-codex` 启动 Codex 时：Codex 退出后显示。双击打开的窗口会停住，按回车再关。
+
+这个请求只发给 `api.github.com`，除了 User-Agent 里的版本号不带任何信息，代理设置和访问上游时相同。
+查不到就不提示，不影响使用。设置 `EXCEL_BRIDGE_UPDATE_CHECK=0` 可以关掉。
+
+更新时先关掉正在运行的桥接窗口和 Codex，再把新版解压到原目录覆盖（或换个目录）。设置和状态不在安装目录里，
+不会丢。从源码运行的 `git pull` 即可。
+
 ## 限制
 
 - 工具一次只调一个，不能并行。执行命令（PowerShell / shell）、改文件、看图片都是工具调用，都能用，
@@ -242,6 +255,7 @@ Codex 里贴的截图、`codex -i 图片.png` 和模型用 `view_image` 看图�
 | `EXCEL_BRIDGE_PROXY` | 出站代理（同 `--proxy`） |
 | `EXCEL_BRIDGE_HOME` | 状态目录：模型目录 JSON、`bridge.log`、登录用工作簿，以及让重启后仍能原样回放历史工具调用的 `tool-calls.sqlite3`（保留 60 天）。默认 `%LOCALAPPDATA%\excel-codex-bridge` 或 `~/.excel-codex-bridge` |
 | `EXCEL_BRIDGE_AUTO_SIGNIN` | 设为 `0` 时不自动打开 Excel（同 `--no-auto-signin`） |
+| `EXCEL_BRIDGE_UPDATE_CHECK` | 设为 `0` 时不检查更新 |
 | `CODEX_HOME` | Codex 配置目录，`desktop` 改写其中的 `config.toml`。默认 `~/.codex` |
 | `GHCP_EXCEL_WEBVIEW2_DATA_DIR` | Windows WebView2 数据根目录（同 `--webview-dir`） |
 | `GHCP_EXCEL_WEBKIT_WEBSITE_DATA_DIR` | macOS WebKit 数据目录 |

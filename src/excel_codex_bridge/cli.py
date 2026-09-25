@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from . import __version__, codex_config, desktop_config, excel_signin, excel_upstream, images
+from . import __version__, codex_config, desktop_config, excel_signin, excel_upstream, images, updates
 from .session import SessionReader
 
 
@@ -62,6 +62,36 @@ def _write_catalog(directory: Path | None = None) -> Path:
 
 def _pictures_line() -> str:
     return images.DESCRIPTION
+
+
+# ─── update check ─────────────────────────────────────────────────────────────
+
+_update_shown = threading.Event()
+
+
+def _update_check() -> updates.UpdateCheck | None:
+    if not updates.enabled():
+        return None
+    return updates.UpdateCheck(codex_config.state_dir() / updates.CACHE_NAME)
+
+
+def _announce_update(release: updates.Release | None, stream=None) -> None:
+    if release is None:
+        return
+    stream = stream or sys.stdout
+    text = updates.notice(release)
+    try:
+        print(text, file=stream, flush=True)
+    except UnicodeEncodeError:  # output redirected to a file in a narrow code page
+        print(text.encode("ascii", "replace").decode("ascii"), file=stream, flush=True)
+    _update_shown.set()
+
+
+def _watch_for_updates() -> None:
+    """For the windows that stay open: say so whenever a newer release comes out."""
+    check = _update_check()
+    if check is not None:
+        updates.watch(check, _announce_update)
 
 
 # ─── automatic sign-in through Excel ──────────────────────────────────────────
@@ -146,6 +176,7 @@ def cmd_serve(args) -> int:
         _print(message)
         _print(_pictures_line())
         _print(f"Listening on {codex_config.base_url(args.port)}  (Ctrl+C to stop)")
+        _watch_for_updates()
     _run_bridge(reader, args, host=args.host, port=args.port, quiet=bool(args.log_file))
     return 0
 
@@ -319,6 +350,8 @@ def cmd_codex(args, codex_args: list[str]) -> int:
 
     home = codex_config.state_dir()
     home.mkdir(parents=True, exist_ok=True)
+    check = _update_check()
+    update = updates.in_background(check) if check is not None else None
     catalog = _write_catalog(home)
     log_file = home / "bridge.log"
     port = args.port or _free_port()
@@ -356,6 +389,10 @@ def cmd_codex(args, codex_args: list[str]) -> int:
             return subprocess.call(command, env=_codex_env(os.environ.copy()))
         finally:
             signal.signal(signal.SIGINT, previous)
+            # Only once Codex is done: its screen would hide the notice, and
+            # stderr keeps it out of `codex exec` output that scripts read.
+            if update is not None:
+                _announce_update(update(0), stream=sys.stderr)
     finally:
         if bridge.stdin:
             try:
@@ -479,6 +516,7 @@ def cmd_desktop(args) -> int:
         _print("  Keep this window open; closing it or pressing Ctrl+C puts your config back.")
     _print(_pictures_line())
     _print(f"Listening on {codex_config.base_url(args.port)}")
+    _watch_for_updates()
     try:
         _run_bridge(reader, args, host="127.0.0.1", port=args.port, quiet=False)
     except KeyboardInterrupt:
@@ -583,11 +621,11 @@ def _started_by_double_click() -> bool:
 def main(argv: list[str] | None = None) -> int:
     if argv is None and _started_by_double_click():
         # Explorer starts us in the install folder; keep Codex out of it, and
-        # keep the window open long enough to read an error.
+        # keep the window open long enough to read an error or an update notice.
         if Path.cwd().resolve() == Path(sys.executable).resolve().parent:
             os.chdir(Path.home())
         code = _main(sys.argv[1:])
-        if code:
+        if code or _update_shown.is_set():
             try:
                 input("\nPress Enter to close this window...")
             except (EOFError, KeyboardInterrupt):
