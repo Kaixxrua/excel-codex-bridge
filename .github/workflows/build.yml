@@ -31,6 +31,17 @@ jobs:
       - run: python -m pip install -r requirements.txt pytest
       - run: python -m pytest -q
 
+  sub2api-docker:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: docker build -f packaging/sub2api/Dockerfile -t excel-sub2api:test .
+      - run: python tests/e2e/sub2api_smoke.py --image excel-sub2api:test
+
   e2e-linux:
     needs: test
     runs-on: ubuntu-latest
@@ -74,6 +85,9 @@ jobs:
           --collect-submodules uvicorn --hidden-import anyio._backends._asyncio
           packaging/entry.py
 
+      - name: SUB2API command (excel-codex.exe)
+        run: dist/excel-codex/excel-codex.exe sub2api --help
+
       - name: e2e (excel-codex.exe)
         run: python tests/e2e/run_e2e.py -- dist/excel-codex/excel-codex.exe
       - name: e2e (excel-codex.exe, gpt-6-astra-excel)
@@ -96,7 +110,7 @@ jobs:
           Copy-Item -Recurse dist/excel-codex/* $name/
           Copy-Item excel-codex-desktop.cmd, README.md, README.en.md, LICENSE, UPSTREAM-LICENSE $name/
           New-Item -ItemType Directory $name/docs | Out-Null
-          Copy-Item docs/qq-group.jpg $name/docs/
+          Copy-Item docs/qq-group.jpg, docs/sub2api.md, docs/sub2api.en.md $name/docs/
           Compress-Archive -Path $name -DestinationPath "$name.zip"
           $hash = (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower()
           "$hash  $name.zip" | Out-File -Encoding ascii "$name.zip.sha256"
@@ -139,6 +153,9 @@ jobs:
           --collect-submodules uvicorn --hidden-import anyio._backends._asyncio
           packaging/entry.py
 
+      - name: SUB2API command (excel-codex)
+        run: dist/excel-codex/excel-codex sub2api --help
+
       - name: e2e (excel-codex)
         run: python tests/e2e/run_e2e.py -- dist/excel-codex/excel-codex
       - name: e2e (excel-codex desktop)
@@ -155,7 +172,7 @@ jobs:
           mkdir -p "$name/docs"
           cp -R dist/excel-codex/. "$name/"
           cp excel-codex-desktop.command README.md README.en.md LICENSE UPSTREAM-LICENSE "$name/"
-          cp docs/qq-group.jpg "$name/docs/"
+          cp docs/qq-group.jpg docs/sub2api.md docs/sub2api.en.md "$name/docs/"
           # The double-click launcher must find the packaged binary.
           CODEX_HOME="$RUNNER_TEMP/codex-home" "./$name/excel-codex-desktop.command" --off
           tar -czf "$name.tar.gz" "$name"
@@ -171,7 +188,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [e2e-linux, windows, macos]
+    needs: [e2e-linux, windows, macos, sub2api-docker]
     runs-on: ubuntu-latest
     permissions:
       contents: write

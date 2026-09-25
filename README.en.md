@@ -5,6 +5,11 @@
 > **Unofficial.** Not affiliated with, endorsed by, or supported by OpenAI or Microsoft.
 > Read [Risks and disclaimer](#risks-and-disclaimer) before using it.
 
+> **Optional SUB2API plugin:** run Excel as a private sidecar upstream without modifying
+> SUB2API. See [Docker deployment and SSH session sync](docs/sub2api.en.md).
+> This explicitly opted-in mode transfers your session to your trusted server.
+> The local-only / OpenAI-only guarantees below describe the default local mode, not this remote mode.
+
 Run the [Codex CLI](https://github.com/openai/codex) and the Codex desktop app on the ChatGPT
 session that the **ChatGPT add-in for Excel** keeps on *your own* computer. One command (or a
 double-click) starts a local bridge and Codex together; quitting stops the bridge. When a sign-in

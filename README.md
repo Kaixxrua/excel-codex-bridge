@@ -4,6 +4,11 @@
 
 > **非官方项目**，与 OpenAI、Microsoft 无任何关联，也未获其认可。使用前请先读[风险与免责声明](#风险与免责声明)。
 
+> **新增可选：SUB2API 插件。** 将 Excel 会话作为独立上游接入你自己的 SUB2API，
+> 无需修改 SUB2API 源码，见 [Docker 部署与 SSH 会话同步](docs/sub2api.md)。
+> 此模式会在你显式运行同步命令后，把会话送到你指定的可信服务器；
+> 下文“仅本机、只发往 OpenAI”的说明指默认本地模式，不适用于远端插件模式。
+
 用你**自己电脑上**的 ChatGPT Excel 加载项会话来跑 [Codex CLI](https://github.com/openai/codex)
 和 Codex 桌面版：双击或一条命令，本地桥接和 Codex 一起启动，退出时桥接自动关闭。
 需要登录时自动替你打开 Excel 的 ChatGPT 面板，登录由加载项自己完成；
