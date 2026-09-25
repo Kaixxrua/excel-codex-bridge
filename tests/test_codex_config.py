@@ -23,6 +23,9 @@ def parse_overrides(args: list[str]) -> dict:
     return parsed
 
 
+IMAGE_TOOL = {"x-openai-actor-authorization": "excel-codex-bridge"}
+
+
 class CatalogTests(unittest.TestCase):
     def test_catalog_lists_the_excel_models_with_pictures(self):
         models = codex_config.catalog_payload()["models"]
@@ -55,6 +58,8 @@ class OverrideTests(unittest.TestCase):
         self.assertEqual(parsed["model_provider"], "excel-bridge")
         self.assertEqual(parsed["model_providers.excel-bridge.base_url"], "http://127.0.0.1:4321/v1")
         self.assertEqual(parsed["model_providers.excel-bridge.wire_api"], "responses")
+        # The header Codex wants before it offers its image tool to a provider.
+        self.assertEqual(parsed["model_providers.excel-bridge.http_headers"], IMAGE_TOOL)
         self.assertEqual(parsed["model_catalog_json"], str(catalog))
 
     def test_windows_paths_survive_toml_parsing(self):
@@ -81,6 +86,7 @@ class OverrideTests(unittest.TestCase):
         config = tomllib.loads(snippet)
         self.assertEqual(config["model_provider"], "excel-bridge")
         self.assertEqual(config["model_providers"]["excel-bridge"]["base_url"], "http://127.0.0.1:8765/v1")
+        self.assertEqual(config["model_providers"]["excel-bridge"]["http_headers"], IMAGE_TOOL)
 
 
 class CliTests(unittest.TestCase):

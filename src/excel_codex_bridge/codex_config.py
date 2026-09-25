@@ -19,6 +19,10 @@ PROVIDER_ID = "excel-bridge"
 PROVIDER_NAME = "Excel Bridge"
 DEFAULT_MODEL = excel_upstream.MODEL_ID
 DEFAULT_PORT = 8765
+# Codex offers its image tool (image_gen.imagegen) to a provider of its own only
+# when the provider sets this header; the bridge answers the tool with the
+# add-in's image endpoints and ignores the value.
+IMAGE_TOOL_HEADER = ("x-openai-actor-authorization", "excel-codex-bridge")
 
 # Codex requires base instructions for catalog models.  Codex's own templates
 # describe tools the Excel path does not expose, so ship a compact prompt;
@@ -137,6 +141,11 @@ def base_url(port: int) -> str:
     return f"http://127.0.0.1:{port}/v1"
 
 
+def http_headers() -> str:
+    name, value = IMAGE_TOOL_HEADER
+    return f"{{ {json.dumps(name)} = {json.dumps(value)} }}"
+
+
 def codex_overrides(port: int, catalog: Path, model: str = DEFAULT_MODEL) -> list[str]:
     """``-c`` arguments that route one Codex session through the bridge."""
     prefix = f"model_providers.{PROVIDER_ID}"
@@ -145,6 +154,7 @@ def codex_overrides(port: int, catalog: Path, model: str = DEFAULT_MODEL) -> lis
         (f"{prefix}.name", _toml_string(PROVIDER_NAME)),
         (f"{prefix}.base_url", _toml_string(base_url(port))),
         (f"{prefix}.wire_api", _toml_string("responses")),
+        (f"{prefix}.http_headers", http_headers()),
         ("model_catalog_json", _toml_string(str(catalog))),
         ("model", _toml_string(model)),
     ]
@@ -177,4 +187,5 @@ def config_snippet(port: int, catalog: Path, model: str = DEFAULT_MODEL) -> str:
         f"name = {_toml_string(PROVIDER_NAME)}\n"
         f"base_url = {_toml_string(base_url(port))}\n"
         'wire_api = "responses"\n'
+        f"http_headers = {http_headers()}\n"
     )

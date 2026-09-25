@@ -42,6 +42,8 @@ Codex CLI ──(Responses API, 127.0.0.1)──▶ excel-codex-bridge ──(HT
 - **Pictures.** Pictures go to OpenAI only, like the rest of the request. Where the backend will
   not take them inline, the bridge uploads them to OpenAI the way the add-in's Upload file button
   does; see [Pictures](#pictures).
+- **Image generation.** Codex's own image tool is answered by the endpoint the Excel add-in draws
+  pictures with (gpt-image-2), on the same session; see [Image generation](#image-generation).
 - **Your Codex config is left alone.** The CLI launcher passes the provider and model catalog as
   `-c` overrides, so `~/.codex/config.toml` is untouched. Only [desktop mode](#codex-desktop-app--ide-extension)
   edits it, restores it exactly when its window closes, and keeps a backup.
@@ -260,6 +262,27 @@ at startup:
 - When a tool such as Cockpit Tools manages Codex, that tool writes the model catalog, not this
   bridge. Turn on image input for the `*-excel` models in its model provider settings (Cockpit 1.3.57
   and earlier leave it off by default).
+
+## Image generation
+
+From 0.4.6, Codex's own image tool works: ask Codex to "draw …" or "change this picture to …".
+The picture shows up in the conversation and is saved under `~/.codex/generated_images/`.
+
+- Codex offers the tool only when the provider sets an `x-openai-actor-authorization` header. The
+  launcher's `-c` overrides, desktop mode and `print-config` all set it (to `excel-codex-bridge`;
+  the bridge does not use the value or send it anywhere). If you added this header by hand earlier,
+  you can remove it after upgrading.
+- The bridge sends the request to the endpoints the add-in draws with: a new picture to
+  `bps.openai.com/basispoints/api/images/generations`, a change to `/images/edits`, on the same
+  session and with the add-in's choices: gpt-image-2, PNG, sizes `auto`, `1024x1024`, `1536x1024`,
+  `1024x1536` and `1280x720`.
+- Transparent backgrounds are not available (the add-in does not offer them either). When the
+  model asks for one it is told so, and can draw on a plain background instead.
+- Pictures count against your ChatGPT plan. When the backend refuses, Codex shows the reason the
+  backend gave.
+- When a tool such as Cockpit Tools manages Codex, it writes the provider, so add
+  `http_headers = { "x-openai-actor-authorization" = "excel-codex-bridge" }` to its provider
+  settings yourself.
 
 ## Update check
 

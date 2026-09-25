@@ -1,31 +1,33 @@
-并行工具调用，多会话同时开工 · Parallel tool calls, many sessions at once
+Codex 自带的生图工具能用了 · Codex's image tool works
 
 > **非官方项目**，与 OpenAI、Microsoft 无关联。使用加载项后端可能违反 OpenAI 服务条款，风险自负。
 > **Unofficial.** Not affiliated with OpenAI or Microsoft. Using the add-in's backend may violate OpenAI's terms; use at your own risk.
 
 ## 变化
 
-- **并行工具调用**：互不依赖的工具调用（比如同时读几个文件、跑几条命令）模型会一次发出，Codex 同时执行，
-  不用再一轮一轮地等。改文件仍按顺序来。0.4.3 只执行第一个调用、丢掉其余的，现在全部执行。
-  已用真实后端确认：模型会一次发出多个调用，后端也接受带多个调用结果的历史。
-- **多个会话同时用**：几个 Codex 窗口、桌面版对话或子代理可以共用一个桥接同时工作。以前最多 8 个请求
-  同时进行，第 9 个要排队，排超过 30 秒就报错；现在上限是 64。
-- 同时开的会话越多，ChatGPT 套餐额度用得越快。
+- **生图**：让 Codex「画一张……」或「把这张图改成……」即可，CLI 和桌面版都能用。以前 Codex 不提供这个
+  工具；手动加了请求头的，生图请求也会因为桥接没有这个接口而失败（404）。现在桥接把请求转给 Excel
+  加载项自己生图用的接口（gpt-image-2），用同一个登录会话，参数也和加载项一致。
+- 启动器、桌面版模式和 `print-config` 会自动加上 Codex 要求的 `x-openai-actor-authorization` 请求头，
+  不用手动配置。以前自己加过的，可以删掉。
+- 不支持透明背景（加载项本身也不支持）；生图额度按 ChatGPT 套餐算。
+- 已用真实的 Codex CLI 0.156.1 测过完整流程（Codex 调用生图 → 桥接 → 图片回到对话并存盘）；
+  后端这一段按加载项的请求格式实现，还没在真实账号上测过。遇到后端拒绝，请把 Codex 里显示的原因发到群里。
 
 ## 下载
 
-- **Windows**：`excel-codex-bridge-0.4.5-windows-x64.zip`。解压后双击 `excel-codex.exe` 打开 Codex CLI，
+- **Windows**：`excel-codex-bridge-0.4.6-windows-x64.zip`。解压后双击 `excel-codex.exe` 打开 Codex CLI，
   双击 `excel-codex-desktop.cmd` 给桌面版用。
-- **macOS（Apple 芯片）**：`excel-codex-bridge-0.4.5-macos-arm64.tar.gz`
-- **macOS（Intel）**：`excel-codex-bridge-0.4.5-macos-x64.tar.gz`
+- **macOS（Apple 芯片）**：`excel-codex-bridge-0.4.6-macos-arm64.tar.gz`
+- **macOS（Intel）**：`excel-codex-bridge-0.4.6-macos-x64.tar.gz`
 - **Linux / WSL 或从源码运行**：下载 Source code，使用 `excel-codex.sh`（需要 Python 3.10+）。
-- **Linux / VPS 的 SUB2API 部署**：下载本版本 Source code，按 [部署文档](https://github.com/Kaixxrua/excel-codex-bridge/blob/v0.4.5/docs/sub2api.md) 构建 `packaging/sub2api/compose.yaml`。
+- **Linux / VPS 的 SUB2API 部署**：下载本版本 Source code，按 [部署文档](https://github.com/Kaixxrua/excel-codex-bridge/blob/v0.4.6/docs/sub2api.md) 构建 `packaging/sub2api/compose.yaml`。
 
 macOS 推荐在终端用 `curl` 下载，这样不会被"无法验证开发者"拦下（Intel 芯片把 `arm64` 换成 `x64`）：
 
 ```
-curl -fL https://github.com/Kaixxrua/excel-codex-bridge/releases/download/v0.4.5/excel-codex-bridge-0.4.5-macos-arm64.tar.gz | tar xz
-./excel-codex-bridge-0.4.5-macos-arm64/excel-codex status
+curl -fL https://github.com/Kaixxrua/excel-codex-bridge/releases/download/v0.4.6/excel-codex-bridge-0.4.6-macos-arm64.tar.gz | tar xz
+./excel-codex-bridge-0.4.6-macos-arm64/excel-codex status
 ```
 
 用浏览器下载的，解压后先运行一次 `xattr -dr com.apple.quarantine <解压出的目录>`。
@@ -42,31 +44,33 @@ curl -fL https://github.com/Kaixxrua/excel-codex-bridge/releases/download/v0.4.5
 
 ## Changes
 
-- **Parallel tool calls.** Calls that do not depend on each other (reading several files, independent
-  commands) now come in one go and Codex runs them at the same time instead of one round after another.
-  File edits still happen in order. 0.4.3 ran only the first such call and dropped the rest; now all of
-  them run. Checked against the real backend: the model does issue several calls at once, and the backend
-  takes a history with several results.
-- **Several sessions at once.** Codex windows, desktop conversations and subagents can share one bridge
-  and work at the same time. Only 8 requests could run at once before; the 9th queued and failed after
-  30 seconds. The limit is now 64.
-- More sessions at once use up your ChatGPT plan faster.
+- **Image generation.** Ask Codex to "draw …" or "change this picture to …", in the CLI and the desktop
+  app. Codex did not offer its image tool before, and with the header added by hand the request failed
+  (404) because the bridge had no such endpoint. The bridge now sends it to the endpoint the Excel add-in
+  draws pictures with (gpt-image-2), on the same session and with the add-in's choices.
+- The launcher, desktop mode and `print-config` set the `x-openai-actor-authorization` header Codex asks
+  for, so there is nothing to configure. If you added it by hand, you can remove it.
+- Transparent backgrounds are not available (the add-in does not offer them either); pictures count
+  against your ChatGPT plan.
+- Tested end to end with the real Codex CLI 0.156.1 (Codex calls the image tool → bridge → the picture
+  comes back to the conversation and is saved). The backend side follows the add-in's own requests and
+  has not been tried on a real account yet; if the backend refuses, please share the reason Codex shows.
 
 ## Download
 
-- **Windows**: `excel-codex-bridge-0.4.5-windows-x64.zip`. Double-click `excel-codex.exe` for the
+- **Windows**: `excel-codex-bridge-0.4.6-windows-x64.zip`. Double-click `excel-codex.exe` for the
   Codex CLI, or `excel-codex-desktop.cmd` for the desktop app.
-- **macOS (Apple silicon)**: `excel-codex-bridge-0.4.5-macos-arm64.tar.gz`
-- **macOS (Intel)**: `excel-codex-bridge-0.4.5-macos-x64.tar.gz`
+- **macOS (Apple silicon)**: `excel-codex-bridge-0.4.6-macos-arm64.tar.gz`
+- **macOS (Intel)**: `excel-codex-bridge-0.4.6-macos-x64.tar.gz`
 - **Linux / WSL, or from source**: download the source code and use `excel-codex.sh` (Python 3.10+).
-- **Linux / VPS with SUB2API**: download this release's source and follow the [deployment guide](https://github.com/Kaixxrua/excel-codex-bridge/blob/v0.4.5/docs/sub2api.en.md).
+- **Linux / VPS with SUB2API**: download this release's source and follow the [deployment guide](https://github.com/Kaixxrua/excel-codex-bridge/blob/v0.4.6/docs/sub2api.en.md).
 
 On a Mac, downloading with `curl` avoids the "developer cannot be verified" block (Intel: replace
 `arm64` with `x64`):
 
 ```
-curl -fL https://github.com/Kaixxrua/excel-codex-bridge/releases/download/v0.4.5/excel-codex-bridge-0.4.5-macos-arm64.tar.gz | tar xz
-./excel-codex-bridge-0.4.5-macos-arm64/excel-codex status
+curl -fL https://github.com/Kaixxrua/excel-codex-bridge/releases/download/v0.4.6/excel-codex-bridge-0.4.6-macos-arm64.tar.gz | tar xz
+./excel-codex-bridge-0.4.6-macos-arm64/excel-codex status
 ```
 
 If you downloaded with a browser, run `xattr -dr com.apple.quarantine <extracted folder>` once.

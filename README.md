@@ -35,6 +35,8 @@ Codex CLI ──(Responses API, 127.0.0.1)──▶ excel-codex-bridge ──(HT
 - **多个会话同时用**：几个 Codex 窗口、桌面版对话或子代理可以共用一个桥接同时工作，互不排队。
 - **图片**：图片和请求一样只发给 OpenAI。后端不收内嵌图片的地方，桥接像加载项的「上传文件」按钮
   那样把图片传到 OpenAI 再引用，见[图片](#图片)。
+- **生图**：Codex 自带的生图工具由桥接转给 Excel 加载项自己生图用的接口（gpt-image-2），
+  同一个登录会话，见[生图](#生图)。
 - **不乱改你的 Codex 配置**：命令行启动器用 `-c` 参数临时指定 provider 和模型目录，
   `~/.codex/config.toml` 保持原样。只有[桌面版模式](#在-codex-桌面版--ide-插件中使用)会改它，
   窗口关闭即按原样恢复，并留有备份。
@@ -219,6 +221,22 @@ Codex 里贴的截图、`codex -i 图片.png` 和模型用 `view_image` 看图�
   macOS 按 `Cmd+Q`）重新打开。
 - 用 Cockpit Tools 这类工具管理 Codex 时，模型目录是它生成的，不是本工具。在它的模型供应商设置
   里把 `*-excel` 模型的「图片输入」打开（Cockpit 1.3.57 及更早默认关闭）。
+
+## 生图
+
+从 0.4.6 起可以用 Codex 自带的生图工具：让 Codex「画一张……」或「把这张图改成……」即可。
+生成的图显示在对话里，同时存到 `~/.codex/generated_images/`。
+
+- Codex 只在 provider 设置了 `x-openai-actor-authorization` 请求头时才提供这个工具。启动器的
+  `-c` 参数、桌面版模式和 `print-config` 都会加上（值是 `excel-codex-bridge`，桥接不使用这个值，
+  也不往外发）。以前自己手动加过这个头的，升级后可以删掉。
+- 桥接把请求转给加载项生图用的接口：新图发到 `bps.openai.com/basispoints/api/images/generations`，
+  改图发到 `/images/edits`，用同一个登录会话，参数也和加载项一致：模型 gpt-image-2，PNG，
+  尺寸 `auto`、`1024x1024`、`1536x1024`、`1024x1536`、`1280x720`。
+- 不支持透明背景（加载项本身也不支持）。模型要透明背景时会收到说明，可以改用普通背景再画。
+- 生图额度按你的 ChatGPT 套餐算。后端拒绝时，Codex 里会显示后端给的原因。
+- 用 Cockpit Tools 这类工具管理 Codex 时，provider 是它写的，需要在它的供应商配置里自己加上
+  `http_headers = { "x-openai-actor-authorization" = "excel-codex-bridge" }`。
 
 ## 检查更新
 

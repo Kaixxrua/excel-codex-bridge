@@ -19,6 +19,11 @@ config must come back byte for byte when the desktop window stops.
 at once: Codex must run both, and the bridge must replay both native calls
 followed by both results in the next request.
 
+``--imagegen`` makes the first answer a call to Codex's image tool
+(``image_gen.imagegen``): Codex must send it to the bridge's
+``images/generations``, the bridge must draw it with the add-in's image
+endpoint, and the picture must come back to the model in the tool result.
+
 ``--images`` also attaches a picture (``codex exec -i``).  Like the real
 backend, the fake one refuses a user message with an inline picture; the
 bridge must then upload it once to the attachments endpoint, the way the
@@ -28,6 +33,7 @@ add-in does, and name it by its file id from then on.
 from __future__ import annotations
 
 import argparse
+import base64
 import itertools
 import json
 import os
@@ -129,9 +135,15 @@ def transport_call(n: int, name: str, arguments: dict) -> dict:
     }
 
 
+IMAGE_PROMPT = "a blue whale in a spreadsheet"
+
+
 class FakeExcelBackend:
-    def __init__(self, parallel: bool = False) -> None:
+    def __init__(self, parallel: bool = False, imagegen: bool = False) -> None:
         self.requests: list[dict] = []
+        # What the bridge sent to the add-in's image endpoint, and the picture drawn.
+        self.drawings: list[tuple[dict, dict]] = []
+        self.drawn = base64.b64encode(png(12, 8)).decode()
         self.unexpected: list[str] = []
         self.shell_tool = ""
         # Requests refused for an inline picture in a user message, and uploads.
@@ -146,6 +158,12 @@ class FakeExcelBackend:
             return JSONResponse({"openai_file_id": f"file-e2e-{len(self.uploads)}", "filename": "picture.png",
                                  "content_type": "image/png", "size": 1, "input_tokens": 85})
 
+        @app.post("/basispoints/api/images/generations")
+        async def generations(request: Request):
+            self.drawings.append((dict(request.headers), await request.json()))
+            return JSONResponse({"created": 1, "background": "opaque", "output_format": "png",
+                                 "data": [{"b64_json": self.drawn}]})
+
         @app.post("/basispoints/api/responses")
         async def responses(request: Request):
             body = await request.json()
@@ -159,6 +177,8 @@ class FakeExcelBackend:
                 name, arguments = shell_call(raw)
                 self.shell_tool = name
                 items = [transport_call(1, name, arguments)]
+                if imagegen:
+                    items = [transport_call(1, "image_gen.imagegen", {"prompt": IMAGE_PROMPT})]
                 if parallel:
                     items.append(transport_call(2, *shell_call(raw, SECOND_PROBE)))
                 events = [sse("response.created", {"type": "response.created",
@@ -181,6 +201,8 @@ class FakeExcelBackend:
                     "output": items, "usage": USAGE}}))
             else:
                 seen = "bridge-e2e-42" in raw and (not parallel or "bridge-e2e-43" in raw)
+                if imagegen:
+                    seen = f"data:image/png;base64,{self.drawn}" in raw
                 text = "done: tool output seen" if seen else "done: tool output MISSING"
                 msg = {"type": "message", "id": f"msg_{n}", "role": "assistant", "status": "completed",
                        "content": [{"type": "output_text", "text": text, "annotations": []}]}
@@ -325,6 +347,7 @@ def main() -> int:
     parser.add_argument("--desktop", action="store_true", help="check `desktop` mode with a plain codex")
     parser.add_argument("--images", action="store_true", help="also attach a picture")
     parser.add_argument("--parallel", action="store_true", help="answer with two tool calls at once")
+    parser.add_argument("--imagegen", action="store_true", help="answer with a call to Codex's image tool")
     parser.add_argument("--timeout", type=int, default=900, help="seconds for each long step")
     parser.add_argument("launcher", nargs=argparse.REMAINDER)
     args = parser.parse_args()
@@ -338,7 +361,7 @@ def main() -> int:
     webview = write_webview_session(root / "webview", time.time() + 3 * 86400, account="e2e-account")
     project = root / "project"
     project.mkdir()
-    backend = FakeExcelBackend(parallel=args.parallel)
+    backend = FakeExcelBackend(parallel=args.parallel, imagegen=args.imagegen)
     server, port = start_server(backend.app)
 
     env = dict(os.environ)
@@ -371,7 +394,8 @@ def main() -> int:
          f"upstream model is not {upstream_model}"),
         (all(r.get("reasoning_effort") == "high" for r in backend.requests),
          "reasoning effort from the subcommand -c did not arrive"),
-        (len(backend.requests) >= 2 and f"PP=[{USER_PYTHONPATH}]" in json.dumps(backend.requests[1]),
+        (args.imagegen or len(backend.requests) >= 2
+         and f"PP=[{USER_PYTHONPATH}]" in json.dumps(backend.requests[1]),
          "Codex's commands saw a different PYTHONPATH"),
         (not backend.unexpected, f"unexpected upstream paths: {backend.unexpected}"),
     ]
@@ -388,6 +412,22 @@ def main() -> int:
              f"both native calls then both results should be replayed, got {replayed}"),
             (backend.requests[1].get("metadata", {}).get("agent_iteration") == "2",
              "parallel results should count as one agent iteration"),
+        ]
+    if args.imagegen:
+        headers, drawing = backend.drawings[0] if backend.drawings else ({}, {})
+        checks += [
+            (bool(backend.requests) and "image_gen" in json.dumps(backend.requests[0]),
+             "Codex did not offer its image tool"),
+            (len(backend.drawings) == 1, f"expected one picture drawn, got {len(backend.drawings)}"),
+            # Codex 0.156 leaves the background out; later builds send "opaque".
+            ({**drawing, "background": "auto"} == {"background": "auto", "model": "gpt-image-2",
+                                                   "output_format": "png", "prompt": IMAGE_PROMPT,
+                                                   "quality": "auto", "size": "auto"}
+             and drawing.get("background") in {"auto", "opaque"},
+             f"the image request was not the add-in's: {drawing}"),
+            (headers.get("authorization", "").startswith("Bearer ")
+             and headers.get("chatgpt-account-id") == "e2e-account",
+             "the image request did not carry the Excel session"),
         ]
     if args.images:
         announced = "Pictures: sent to OpenAI"

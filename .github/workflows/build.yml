@@ -63,6 +63,10 @@ jobs:
         run: python tests/e2e/run_e2e.py --images -- ./excel-codex.sh
       - name: e2e (excel-codex.sh desktop, pictures)
         run: python tests/e2e/run_e2e.py --desktop --images -- ./excel-codex.sh
+      - name: e2e (excel-codex.sh, image tool)
+        run: python tests/e2e/run_e2e.py --imagegen -- ./excel-codex.sh
+      - name: e2e (excel-codex.sh desktop, image tool)
+        run: python tests/e2e/run_e2e.py --desktop --imagegen -- ./excel-codex.sh
 
   windows:
     needs: test
@@ -98,6 +102,10 @@ jobs:
         run: python tests/e2e/run_e2e.py --images -- dist/excel-codex/excel-codex.exe
       - name: e2e (excel-codex.exe desktop, pictures)
         run: python tests/e2e/run_e2e.py --desktop --images -- dist/excel-codex/excel-codex.exe
+      - name: e2e (excel-codex.exe, image tool)
+        run: python tests/e2e/run_e2e.py --imagegen -- dist/excel-codex/excel-codex.exe
+      - name: e2e (excel-codex.exe desktop, image tool)
+        run: python tests/e2e/run_e2e.py --desktop --imagegen -- dist/excel-codex/excel-codex.exe
       - name: e2e (excel-codex.cmd)
         run: python tests/e2e/run_e2e.py -- excel-codex.cmd
 

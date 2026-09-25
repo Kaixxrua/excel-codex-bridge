@@ -46,6 +46,7 @@ class EnableTests(unittest.TestCase):
         provider = data["model_providers"]["excel-bridge"]
         self.assertEqual(provider["base_url"], "http://127.0.0.1:8765/v1")
         self.assertEqual(provider["wire_api"], "responses")
+        self.assertEqual(provider["http_headers"], {"x-openai-actor-authorization": "excel-codex-bridge"})
         return data
 
     def test_user_settings_survive_and_come_back_exactly(self):
@@ -74,6 +75,21 @@ class EnableTests(unittest.TestCase):
                 if "\r\n" in original:
                     self.assertNotIn("\n", enabled.replace("\r\n", ""))
                 self.assertEqual(desktop_config.strip_managed(enabled), original)
+
+    def test_own_provider_sub_tables_are_set_aside_too(self):
+        # A hand-made image-tool setup, as users pasted it before the bridge set the header.
+        original = (
+            "[model_providers.excel-bridge]\n"
+            'base_url = "http://127.0.0.1:8765/v1"\n'
+            "[model_providers.excel-bridge.http_headers]\n"
+            '"x-openai-actor-authorization" = "local-image-extension"\n'
+            "[model_providers.excel-bridge-old]\n"
+            'name = "kept"\n'
+        )
+        enabled = enable(original)
+        data = self.assert_points_at_bridge(enabled)
+        self.assertEqual(data["model_providers"]["excel-bridge-old"], {"name": "kept"})
+        self.assertEqual(desktop_config.strip_managed(enabled), original)
 
     def test_nested_model_keys_are_left_alone(self):
         original = '[profiles.fast]\nmodel = "gpt-5.5"\n'

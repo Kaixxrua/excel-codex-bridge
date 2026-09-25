@@ -29,8 +29,9 @@ BACKUP_SUFFIX = ".before-excel-codex"
 
 _TABLE_HEADER = re.compile(r"\s*\[")
 _OWN_KEYS = re.compile(r"\s*(model_provider|model|model_catalog_json)\s*=")
+# The provider's table and any of its sub-tables, such as its http_headers.
 _OWN_TABLE = re.compile(
-    rf"\s*\[\s*model_providers\s*\.\s*([\"']?){re.escape(codex_config.PROVIDER_ID)}\1\s*\]"
+    rf"\s*\[\s*model_providers\s*\.\s*([\"']?){re.escape(codex_config.PROVIDER_ID)}\1\s*[.\]]"
 )
 _BOM = "﻿"
 
@@ -115,6 +116,7 @@ def enable(text: str, *, port: int, catalog: Path, model: str) -> str:
         f"name = {toml(codex_config.PROVIDER_NAME)}",
         f"base_url = {toml(codex_config.base_url(port))}",
         'wire_api = "responses"',
+        f"http_headers = {codex_config.http_headers()}",
         BOTTOM_END,
     ]
     return nl.join(top) + nl + nl + body + (nl if no_eol else "") + nl + nl.join(bottom) + nl

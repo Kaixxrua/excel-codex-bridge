@@ -28,7 +28,7 @@ log = logging.getLogger("excel_codex_bridge.images")
 ATTACHMENTS_URL = excel_upstream.RESPONSES_URL.rsplit("/", 1)[0] + "/attachments"
 UPLOAD_TIMEOUT = httpx.Timeout(120.0, connect=30.0)
 CACHE_SIZE = 256
-_EXTENSIONS = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp"}
+EXTENSIONS = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp"}
 _UPLOAD_DROPS = {"accept", "content-type", "content-length"}
 
 DESCRIPTION = ("Pictures: sent to OpenAI with the request; when the Excel backend will not take one "
@@ -43,7 +43,7 @@ class UploadUnavailable(UploadError):
     """The upload could not be made at all: the request's other pictures are not tried."""
 
 
-def _decode_data_url(url: str) -> tuple[str, bytes] | None:
+def decode_data_url(url: str) -> tuple[str, bytes] | None:
     header, sep, payload = url.partition(",")
     if not sep or ";base64" not in header:
         return None
@@ -153,7 +153,7 @@ class Pictures:
         if walk.kind not in self.refused:
             walk.sent.inline.add(walk.kind)
             return part
-        decoded = _decode_data_url(data_url)
+        decoded = decode_data_url(data_url)
         if decoded is None:
             return _omitted("the picture could not be decoded")
         media_type, data = decoded
@@ -187,7 +187,7 @@ class Pictures:
 
 async def upload(client: httpx.AsyncClient, headers: dict, media_type: str, data: bytes, digest: str) -> str:
     """Upload a picture as the add-in does; its OpenAI file id."""
-    name = f"picture-{digest[:12]}.{_EXTENSIONS.get(media_type, 'png')}"
+    name = f"picture-{digest[:12]}.{EXTENSIONS.get(media_type, 'png')}"
     upload_headers = {key: value for key, value in headers.items() if key.lower() not in _UPLOAD_DROPS}
     upload_headers["accept"] = "application/json"
     try:

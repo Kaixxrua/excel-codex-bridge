@@ -22,6 +22,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from . import excel_upstream
+from . import image_generation
 from . import images
 from . import sse
 from .excel_stream import excel_tool_stream_transform
@@ -33,6 +34,8 @@ MAX_BODY_BYTES = 64 * 1024 * 1024
 NON_STREAMING_ATTEMPTS = 2
 # Upstream answers when it will not take a request's pictures as they are.
 PICTURE_RETRY_STATUSES = {400, 422}
+# Drawing a picture takes a minute or two; the add-in waits five minutes for an edit.
+IMAGE_TIMEOUT = httpx.Timeout(600.0, connect=30.0)
 _LOOPBACK_NAMES = {"localhost"}
 _REFRESH_HINT = (
     "Open Excel, open the ChatGPT add-in pane (sign in if asked), then retry."
@@ -143,7 +146,8 @@ def build_upstream_client() -> httpx.AsyncClient:
     )
 
 
-def _upstream_error_response(upstream: httpx.Response) -> Response:
+def _upstream_error_response(upstream: httpx.Response, *, refused: str | None = None) -> Response:
+    """The backend's error for Codex; ``refused`` names what a 401/403 refused, else the session."""
     status = upstream.status_code
     try:
         payload = upstream.json()
@@ -159,7 +163,10 @@ def _upstream_error_response(upstream: httpx.Response) -> Response:
     if message is None:
         message = (upstream.text or "").strip()[:2000] or f"HTTP {status}"
     if status in {401, 403}:
-        message = f"OpenAI rejected the Excel session ({status}): {message} {_REFRESH_HINT}"
+        if refused:
+            message = f"The Excel backend refused {refused} ({status}): {message}"
+        else:
+            message = f"OpenAI rejected the Excel session ({status}): {message} {_REFRESH_HINT}"
     headers = {}
     retry_after = upstream.headers.get("retry-after")
     if retry_after:
@@ -239,14 +246,51 @@ class Bridge:
                 param="model",
             )
         body = {**body, "model": model_id}
+        headers = self._session_headers(stream=bool(body.get("stream")))
+        if isinstance(headers, Response):
+            return headers
+        return await self._send_with_pictures(headers, body)
+
+    def _session_headers(self, *, stream: bool) -> dict | Response:
         self.reader.refresh()
-        stream = bool(body.get("stream"))
         try:
-            headers = self.reader.store.request_headers(stream=stream)
+            return self.reader.store.request_headers(stream=stream)
         except RuntimeError as exc:
             detail = f" ({self.reader.last_error})" if self.reader.last_error else ""
             return sse.openai_error_response(401, f"{exc}{detail} {_REFRESH_HINT}")
-        return await self._send_with_pictures(headers, body)
+
+    async def images(self, operation: str, body: dict) -> Response:
+        """Codex's image tool: ``generations`` draws a new picture, ``edits`` changes given ones."""
+        try:
+            if operation == "generations":
+                url, send = image_generation.GENERATIONS_URL, {"json": image_generation.generation_body(body)}
+            else:
+                data, files = image_generation.edit_form(body)
+                url, send = image_generation.EDITS_URL, {"data": data, "files": files}
+        except image_generation.Refused as exc:
+            return sse.openai_error_response(400, str(exc))
+        headers = self._session_headers(stream=False)
+        if isinstance(headers, Response):
+            return headers
+        if "files" in send:
+            headers = {key: value for key, value in headers.items() if key.lower() != "content-type"}
+        try:
+            upstream = await self.client.post(url, headers=headers, timeout=IMAGE_TIMEOUT, **send)
+        except httpx.RequestError as exc:
+            return _request_error_response(exc, IMAGE_TIMEOUT)
+        if upstream.status_code >= 400:
+            log.warning("image %s: upstream returned HTTP %s", operation, upstream.status_code)
+            # The session was just checked, so this is about pictures, not signing in.
+            return _upstream_error_response(upstream, refused="the image request")
+        try:
+            payload = upstream.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            payload = None
+        if not isinstance(payload, dict):
+            return sse.openai_error_response(502, "The Excel backend's image answer was not JSON.")
+        pictures = payload.get("data")
+        log.info("image %s: %d picture(s) came back", operation, len(pictures) if isinstance(pictures, list) else 0)
+        return JSONResponse(content=payload)
 
     async def _send_with_pictures(self, headers: dict, body: dict) -> Response:
         """Pictures go inline where the backend takes them, else uploaded, else left out."""
@@ -440,16 +484,27 @@ def create_app(reader: SessionReader | None = None, *, client_factory=build_upst
             ],
         }
 
-    @app.post("/v1/responses")
-    @app.post("/responses")
-    async def responses(request: Request):
+    async def json_body(request: Request) -> dict | Response:
         raw = await request.body()
         if len(raw) > MAX_BODY_BYTES:
             return sse.openai_error_response(413, "Request body is too large")
         try:
-            body = _decode_body(raw, request.headers.get("content-encoding", ""))
+            return _decode_body(raw, request.headers.get("content-encoding", ""))
         except (ValueError, OSError, zlib.error, json.JSONDecodeError, UnicodeDecodeError) as exc:
             return sse.openai_error_response(400, f"Invalid request body: {exc}")
-        return await bridge.responses(body)
+
+    @app.post("/v1/responses")
+    @app.post("/responses")
+    async def responses(request: Request):
+        body = await json_body(request)
+        return body if isinstance(body, Response) else await bridge.responses(body)
+
+    @app.post("/v1/images/{operation}")
+    @app.post("/images/{operation}")
+    async def images_route(operation: str, request: Request):
+        if operation not in {"generations", "edits"}:
+            return sse.openai_error_response(404, f"No such image operation: {operation}")
+        body = await json_body(request)
+        return body if isinstance(body, Response) else await bridge.images(operation, body)
 
     return LocalOnly(app)
