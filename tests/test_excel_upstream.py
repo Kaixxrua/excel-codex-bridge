@@ -521,6 +521,72 @@ class ExcelUpstreamTests(unittest.TestCase):
         self.assertEqual(replay[0], native)
         self.assertEqual(replay[1]["output"], "ok")
 
+    @staticmethod
+    def _exec_command_source() -> dict:
+        return {
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "exec_command",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"cmd": {"type": "string"}},
+                        "required": ["cmd"],
+                    },
+                }
+            ]
+        }
+
+    @staticmethod
+    def _transport_call(call_id: str, code: object) -> dict:
+        return {
+            "type": "function_call",
+            "id": f"fc_{call_id}",
+            "call_id": call_id,
+            "name": "run_officejs",
+            "arguments": json.dumps(
+                {"code": code if isinstance(code, str) else json.dumps(code)}
+            ),
+        }
+
+    def test_several_calls_at_once_run_the_first(self):
+        first = self._transport_call(
+            "call_first", {"name": "exec_command", "arguments": {"cmd": "pwd"}}
+        )
+        second = self._transport_call(
+            "call_second", {"name": "exec_command", "arguments": {"cmd": "ls"}}
+        )
+        response = {"output": [{"type": "reasoning", "id": "rs_1"}, first, second]}
+
+        tool_call = excel_upstream.extract_native_client_tool_call(
+            response, self._exec_command_source()
+        )
+
+        self.assertEqual(tool_call["call_id"], "call_first")
+        self.assertEqual(json.loads(tool_call["arguments"]), {"cmd": "pwd"})
+        payload = excel_upstream.response_payload_with_tool_call(response, tool_call)
+        calls = [item for item in payload["output"] if item["type"] == "function_call"]
+        self.assertEqual([call["name"] for call in calls], ["exec_command"])
+        self.assertNotIn("run_officejs", json.dumps(payload))
+        replay = excel_upstream.translate_input_items(
+            [tool_call, {"type": "function_call_output", "call_id": "call_first", "output": "/w"}],
+            {"exec_command": "function"},
+        )
+        self.assertEqual(replay[0], first)
+
+    def test_several_calls_at_once_skip_an_unusable_one(self):
+        broken = self._transport_call("call_broken", "not json")
+        usable = self._transport_call(
+            "call_usable", {"name": "exec_command", "arguments": {"cmd": "ls"}}
+        )
+
+        tool_call = excel_upstream.extract_native_client_tool_call(
+            {"output": [broken, usable]}, self._exec_command_source()
+        )
+
+        self.assertEqual(tool_call["call_id"], "call_usable")
+        self.assertEqual(json.loads(tool_call["arguments"]), {"cmd": "ls"})
+
     def test_run_officejs_transport_repairs_invalid_shell_backslashes(self):
         source = {
             "tools": [
@@ -1883,6 +1949,50 @@ class ExcelStreamTransformTests(unittest.TestCase):
         completed = dict(events)["response.completed"]["response"]
         self.assertEqual(completed["output"][0]["type"], "reasoning")
         self.assertEqual(completed["output"][1]["name"], "request_user_input")
+        self.assertNotIn("run_officejs", json.dumps(events))
+
+    def test_several_native_calls_at_once_reach_codex_as_one(self):
+        def transport(call_id, cmd):
+            return {
+                "type": "function_call",
+                "id": f"fc_{call_id}",
+                "call_id": call_id,
+                "name": "run_officejs",
+                "status": "completed",
+                "arguments": json.dumps(
+                    {"code": json.dumps({"name": "exec_command", "arguments": {"cmd": cmd}})}
+                ),
+            }
+
+        first, second = transport("call_a", "pwd"), transport("call_b", "ls")
+        chunks = [
+            self._sse("response.created", {"type": "response.created", "response": {"id": "resp_two"}}),
+        ]
+        for index, item in enumerate((first, second)):
+            for event in ("response.output_item.added", "response.output_item.done"):
+                chunks.append(self._sse(event, {"type": event, "output_index": index, "item": item}))
+        chunks.append(
+            self._sse(
+                "response.completed",
+                {
+                    "type": "response.completed",
+                    "response": {"id": "resp_two", "status": "completed", "output": [first, second]},
+                },
+            )
+        )
+
+        events = self._collect(
+            chunks,
+            {"tools": [{"type": "function", "name": "exec_command", "parameters": {"type": "object"}}]},
+        )
+
+        done_items = [
+            payload["item"] for name, payload in events if name == "response.output_item.done"
+        ]
+        self.assertEqual([item["call_id"] for item in done_items], ["call_a"])
+        self.assertEqual(json.loads(done_items[0]["arguments"]), {"cmd": "pwd"})
+        completed = dict(events)["response.completed"]["response"]
+        self.assertEqual([item["call_id"] for item in completed["output"]], ["call_a"])
         self.assertNotIn("run_officejs", json.dumps(events))
 
     def test_plain_text_streams_through_incrementally(self):

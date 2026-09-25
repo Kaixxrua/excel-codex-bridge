@@ -1,34 +1,32 @@
-桥接窗口显示请求，桌面版报错说明 · Requests shown in the bridge window, desktop errors explained
+一次要调多个工具时不再出错 · No more failed tool calls when the model asks for several at once
 
 > **非官方项目**，与 OpenAI、Microsoft 无关联。使用加载项后端可能违反 OpenAI 服务条款，风险自负。
 > **Unofficial.** Not affiliated with OpenAI or Microsoft. Using the add-in's backend may violate OpenAI's terms; use at your own risk.
 
 ## 变化
 
-- **桥接窗口显示每个请求**：桌面版模式和 `serve` 的窗口里，每个请求显示一行，例如
-  `"POST /v1/responses HTTP/1.1" 200`（只有方法、路径和状态码，不含提示词和 token）。
-  以前这些行被日志级别吞掉了。现在一眼就能看出 Codex 的请求有没有经过桥接。
-- **桌面版报错说明**：`The '…-excel' model is not supported when using Codex with a ChatGPT account`，
-  以及在 Codex 里退出登录后变成的 `401 Unauthorized … api.openai.com/v1/responses`，都说明这条对话
-  没经过桥接、直接发给了 OpenAI。桌面版在新建对话时读取 `config.toml` 决定发往哪里，之后一直沿用，
-  模型列表却只在启动时读一次。解决：开着桥接窗口，**完全退出桌面版再打开，然后新建对话**。
-  README 里写了常见原因。
-- 桌面版模式启动时和恢复配置后，都会提醒完全重开桌面版并新建对话。
+- **模型一次要调多个工具时不再出错**：桥接告诉 Codex 不支持并行工具调用，但模型偶尔还是会在一次回复里
+  同时调好几个工具（比如一次读两个文件、跑两条命令）。以前桥接遇到这种回复一个都不转换，Codex 收到
+  它不认识的 `run_officejs`，回 `unsupported call`，模型又被告知"格式不对"，于是反复重试，看起来就是
+  工具调用失败或卡住。现在先执行第一个，其余的丢掉；模型拿到结果后会接着调还需要的。桥接窗口里会
+  显示一行说明。
+- README 的"限制"一节写清楚了：执行命令（PowerShell / shell）、改文件、看图片都是工具调用，都能用，
+  只是一个接一个地调。
 
 ## 下载
 
-- **Windows**：`excel-codex-bridge-0.4.2-windows-x64.zip`。解压后双击 `excel-codex.exe` 打开 Codex CLI，
+- **Windows**：`excel-codex-bridge-0.4.3-windows-x64.zip`。解压后双击 `excel-codex.exe` 打开 Codex CLI，
   双击 `excel-codex-desktop.cmd` 给桌面版用。
-- **macOS（Apple 芯片）**：`excel-codex-bridge-0.4.2-macos-arm64.tar.gz`
-- **macOS（Intel）**：`excel-codex-bridge-0.4.2-macos-x64.tar.gz`
+- **macOS（Apple 芯片）**：`excel-codex-bridge-0.4.3-macos-arm64.tar.gz`
+- **macOS（Intel）**：`excel-codex-bridge-0.4.3-macos-x64.tar.gz`
 - **Linux / WSL 或从源码运行**：下载 Source code，使用 `excel-codex.sh`（需要 Python 3.10+）。
-- **Linux / VPS 的 SUB2API 部署**：下载本版本 Source code，按 [部署文档](https://github.com/Kaixxrua/excel-codex-bridge/blob/v0.4.2/docs/sub2api.md) 构建 `packaging/sub2api/compose.yaml`。
+- **Linux / VPS 的 SUB2API 部署**：下载本版本 Source code，按 [部署文档](https://github.com/Kaixxrua/excel-codex-bridge/blob/v0.4.3/docs/sub2api.md) 构建 `packaging/sub2api/compose.yaml`。
 
 macOS 推荐在终端用 `curl` 下载，这样不会被"无法验证开发者"拦下（Intel 芯片把 `arm64` 换成 `x64`）：
 
 ```
-curl -fL https://github.com/Kaixxrua/excel-codex-bridge/releases/download/v0.4.2/excel-codex-bridge-0.4.2-macos-arm64.tar.gz | tar xz
-./excel-codex-bridge-0.4.2-macos-arm64/excel-codex status
+curl -fL https://github.com/Kaixxrua/excel-codex-bridge/releases/download/v0.4.3/excel-codex-bridge-0.4.3-macos-arm64.tar.gz | tar xz
+./excel-codex-bridge-0.4.3-macos-arm64/excel-codex status
 ```
 
 用浏览器下载的，解压后先运行一次 `xattr -dr com.apple.quarantine <解压出的目录>`。
@@ -45,35 +43,31 @@ curl -fL https://github.com/Kaixxrua/excel-codex-bridge/releases/download/v0.4.2
 
 ## Changes
 
-- **Each request shows in the bridge window.** In desktop mode and `serve`, every request prints one
-  line such as `"POST /v1/responses HTTP/1.1" 200` (method, path and status only; no prompts or
-  tokens). The log level used to hide these lines. Now it is easy to see whether Codex's requests
-  reach the bridge at all.
-- **Desktop errors explained.** `The '…-excel' model is not supported when using Codex with a
-  ChatGPT account`, and the `401 Unauthorized … api.openai.com/v1/responses` it turns into after
-  signing out of Codex, both mean the conversation bypassed the bridge and went to OpenAI. The
-  desktop app decides where a conversation's requests go from `config.toml` when the conversation
-  starts and keeps that choice, but reads the model list only at startup. Fix: with the bridge
-  window open, **fully quit and reopen the desktop app, then start a new conversation**. The README
-  lists the usual causes.
-- Desktop mode now says to fully reopen the desktop app and start a new conversation, both when it
-  starts and after it restores the config.
+- **Asking for several tools at once no longer fails.** The bridge tells Codex that parallel tool
+  calls are not supported, but the model still sometimes calls several tools in one reply (say, reading
+  two files or running two commands). The bridge used to convert none of them: Codex got a
+  `run_officejs` call it does not know, answered `unsupported call`, and the model, told its call was
+  malformed, kept retrying, which looked like tool calls failing or hanging. Now the first call runs
+  and the rest are dropped; once the model sees the result it asks again for whatever it still needs.
+  The bridge window prints a line when this happens.
+- The README's limitations section now spells out that running commands (PowerShell / shell), editing
+  files and viewing images are all tool calls and all work, one after another.
 
 ## Download
 
-- **Windows**: `excel-codex-bridge-0.4.2-windows-x64.zip`. Double-click `excel-codex.exe` for the
+- **Windows**: `excel-codex-bridge-0.4.3-windows-x64.zip`. Double-click `excel-codex.exe` for the
   Codex CLI, or `excel-codex-desktop.cmd` for the desktop app.
-- **macOS (Apple silicon)**: `excel-codex-bridge-0.4.2-macos-arm64.tar.gz`
-- **macOS (Intel)**: `excel-codex-bridge-0.4.2-macos-x64.tar.gz`
+- **macOS (Apple silicon)**: `excel-codex-bridge-0.4.3-macos-arm64.tar.gz`
+- **macOS (Intel)**: `excel-codex-bridge-0.4.3-macos-x64.tar.gz`
 - **Linux / WSL, or from source**: download the source code and use `excel-codex.sh` (Python 3.10+).
-- **Linux / VPS with SUB2API**: download this release's source and follow the [deployment guide](https://github.com/Kaixxrua/excel-codex-bridge/blob/v0.4.2/docs/sub2api.en.md).
+- **Linux / VPS with SUB2API**: download this release's source and follow the [deployment guide](https://github.com/Kaixxrua/excel-codex-bridge/blob/v0.4.3/docs/sub2api.en.md).
 
 On a Mac, downloading with `curl` avoids the "developer cannot be verified" block (Intel: replace
 `arm64` with `x64`):
 
 ```
-curl -fL https://github.com/Kaixxrua/excel-codex-bridge/releases/download/v0.4.2/excel-codex-bridge-0.4.2-macos-arm64.tar.gz | tar xz
-./excel-codex-bridge-0.4.2-macos-arm64/excel-codex status
+curl -fL https://github.com/Kaixxrua/excel-codex-bridge/releases/download/v0.4.3/excel-codex-bridge-0.4.3-macos-arm64.tar.gz | tar xz
+./excel-codex-bridge-0.4.3-macos-arm64/excel-codex status
 ```
 
 If you downloaded with a browser, run `xattr -dr com.apple.quarantine <extracted folder>` once.

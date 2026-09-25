@@ -676,10 +676,22 @@ def extract_native_client_tool_call(
         if isinstance(item, dict)
         and item.get("type") in {"function_call", "custom_tool_call"}
     ]
-    if len(native_calls) != 1:
-        return None
-    native = native_calls[0]
     allowed_tools = client_tool_types(source)
+    # Codex is told not to expect parallel calls, but the model sometimes asks
+    # for several at once. Run the first usable one; the model sees its result
+    # and asks again for anything it still needs.
+    for native in native_calls:
+        call = _client_call_from_native(native, specs, allowed_tools)
+        if call is not None:
+            return call
+    return None
+
+
+def _client_call_from_native(
+    native: dict,
+    specs: dict[str, dict],
+    allowed_tools: dict[str, str],
+) -> dict[str, str] | None:
     envelope = _transport_envelope(native)
     if _is_transport_name(native.get("name")) and envelope is None:
         return None
@@ -992,13 +1004,12 @@ def response_payload_with_tool_call(
     output: list[dict] = []
     if isinstance(existing_output, list):
         for item in existing_output:
-            if (
-                not replaced_native_call
-                and isinstance(item, dict)
-                and item.get("type") in {"function_call", "custom_tool_call"}
-            ):
-                output.append(completed_tool_call)
-                replaced_native_call = True
+            if isinstance(item, dict) and item.get("type") in {"function_call", "custom_tool_call"}:
+                # The one call Codex runs takes the place of the first; any
+                # others the model asked for at the same time are dropped.
+                if not replaced_native_call:
+                    output.append(completed_tool_call)
+                    replaced_native_call = True
             elif isinstance(item, dict):
                 output.append(item)
     result["output"] = output if replaced_native_call else [completed_tool_call]

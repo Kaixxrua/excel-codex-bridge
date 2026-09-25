@@ -192,6 +192,18 @@ def excel_tool_stream_transform(
                         response,
                         source_body,
                     )
+                    asked = sum(
+                        1
+                        for item in (response or {}).get("output") or []
+                        if isinstance(item, dict)
+                        and item.get("type") in {"function_call", "custom_tool_call"}
+                    )
+                    if tool_call is not None and asked > 1:
+                        log.info(
+                            "the model asked for %d tool calls at once; running one, "
+                            "it asks again for the rest",
+                            asked,
+                        )
             if tool_call is not None:
                 held_events.clear()
                 emitted_upto = len(full_text)

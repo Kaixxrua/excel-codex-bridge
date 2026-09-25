@@ -220,7 +220,8 @@ Codex 里贴的截图、`codex -i 图片.png` 和模型用 `view_image` 看图�
 
 ## 限制
 
-- 不支持并行工具调用，工具一次调一个。
+- 工具一次只调一个，不能并行。执行命令（PowerShell / shell）、改文件、看图片都是工具调用，都能用，
+  只是模型要一个接一个地调，多步任务会慢一些。
 - 只实现 Responses API，没有 `/responses/compact` 端点。
 - Excel 后端会给每个请求加上约 2.2 万 token 的固定前缀，大部分命中缓存；额度按你的 ChatGPT 套餐计算。
 - 依赖 Excel 加载项的非公开后端，OpenAI 一调整就可能失效。

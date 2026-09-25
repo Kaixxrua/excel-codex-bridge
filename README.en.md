@@ -259,7 +259,9 @@ at startup:
 
 ## Limitations
 
-- No parallel tool calls; one tool at a time.
+- Tools run one at a time, not in parallel. Running commands (PowerShell / shell), editing files
+  and viewing images are all tool calls and all work; the model just makes them one after another,
+  so multi-step tasks take a little longer.
 - Responses API only; there is no `/responses/compact` endpoint.
 - The Excel backend adds a fixed prefix of about 22k tokens to every request (mostly served from
   cache); usage counts against your ChatGPT plan.
