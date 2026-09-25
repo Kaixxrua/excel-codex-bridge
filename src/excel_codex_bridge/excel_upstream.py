@@ -169,7 +169,7 @@ LOCAL_MODEL_CAPABILITIES = {
         "max_context_window": 200_000 if "luna" in model_id else 272_000,
         "messages_endpoint_supported": False,
         "model_picker_enabled": True,
-        "parallel_tool_calls": False,
+        "parallel_tool_calls": True,
         "provider": "OpenAI Excel",
         "reasoning_efforts": list(EXCEL_REASONING_EFFORTS),
         "supported_endpoints": ["/responses"],
@@ -660,31 +660,47 @@ def _restore_native_function_arguments(name: str, arguments: object) -> object:
     return json.dumps(native, separators=(",", ":"), ensure_ascii=False)
 
 
+def parallel_tool_calls_allowed(source: dict) -> bool:
+    """Codex asks for parallel tool calls; the Responses API default is to allow them."""
+    return source.get("parallel_tool_calls") is not False
+
+
+def extract_native_client_tool_calls(
+    response: dict | None,
+    source: dict,
+) -> list[dict[str, str]]:
+    """The client tool calls in a response, in order; unusable native calls are left out.
+
+    The model issues independent calls together, each through its own
+    run_officejs call. A client that turned parallel calls off gets only the
+    first; the model sees its result and asks again for anything it still needs.
+    """
+    if not isinstance(response, dict):
+        return []
+    output = response.get("output")
+    if not isinstance(output, list):
+        return []
+    specs = _client_tool_specs(source)
+    allowed_tools = client_tool_types(source)
+    calls: list[dict[str, str]] = []
+    for native in output:
+        if not isinstance(native, dict) or native.get("type") not in {"function_call", "custom_tool_call"}:
+            continue
+        call = _client_call_from_native(native, specs, allowed_tools)
+        if call is None:
+            continue
+        calls.append(call)
+        if not parallel_tool_calls_allowed(source):
+            break
+    return calls
+
+
 def extract_native_client_tool_call(
     response: dict | None,
     source: dict,
 ) -> dict[str, str] | None:
-    if not isinstance(response, dict):
-        return None
-    specs = _client_tool_specs(source)
-    output = response.get("output")
-    if not isinstance(output, list):
-        return None
-    native_calls = [
-        item
-        for item in output
-        if isinstance(item, dict)
-        and item.get("type") in {"function_call", "custom_tool_call"}
-    ]
-    allowed_tools = client_tool_types(source)
-    # Codex is told not to expect parallel calls, but the model sometimes asks
-    # for several at once. Run the first usable one; the model sees its result
-    # and asks again for anything it still needs.
-    for native in native_calls:
-        call = _client_call_from_native(native, specs, allowed_tools)
-        if call is not None:
-            return call
-    return None
+    calls = extract_native_client_tool_calls(response, source)
+    return calls[0] if calls else None
 
 
 def _client_call_from_native(
@@ -833,6 +849,19 @@ def _client_tool_protocol_instructions(source: dict) -> str:
         separators=(",", ":"),
         ensure_ascii=False,
     )
+    if parallel_tool_calls_allowed(source):
+        closing = (
+            "\nRemember: each outer native run_officejs call carries exactly one "
+            "catalog-tool JSON object in its code field. When several tool calls do not "
+            "depend on each other (for example reading several files, or independent "
+            "commands), make them as separate run_officejs calls in the same response; "
+            "wait for a result only when the next call needs it. "
+        )
+    else:
+        closing = (
+            "\nRemember: call the outer native run_officejs tool once; put exactly one "
+            "catalog-tool JSON object in its code field. "
+        )
     return (
         "This request is relayed by an external Codex Responses API client, not "
         "by the live Excel workbook. This proxy instruction supersedes any earlier "
@@ -868,8 +897,8 @@ def _client_tool_protocol_instructions(source: dict) -> str:
         "repeat a tool request whose output is already present. Available client "
         "tools:\n"
         + catalog_json
-        + "\nRemember: call the outer native run_officejs tool once; put exactly one "
-        "catalog-tool JSON object in its code field. A host prefix such as "
+        + closing
+        + "A host prefix such as "
         "functions. is only display syntax, not an inner client-tool name."
     )
 
@@ -992,27 +1021,38 @@ def response_payload_with_tool_call(
     *,
     model_id: str = MODEL_ID,
 ) -> dict[str, object]:
+    return response_payload_with_tool_calls(response, [tool_call], model_id=model_id)
+
+
+def response_payload_with_tool_calls(
+    response: dict | None,
+    tool_calls: list[dict[str, str]],
+    *,
+    model_id: str = MODEL_ID,
+) -> dict[str, object]:
     result = dict(response or {})
     result.setdefault("id", f"resp_{uuid4().hex}")
     result.setdefault("object", "response")
     result.setdefault("created_at", int(time.time()))
     result["status"] = "completed"
     result["model"] = model_id
-    completed_tool_call = {**tool_call, "status": "completed"}
+    completed = [{**tool_call, "status": "completed"} for tool_call in tool_calls]
+    pending = list(completed)
     existing_output = result.get("output")
     replaced_native_call = False
     output: list[dict] = []
     if isinstance(existing_output, list):
         for item in existing_output:
             if isinstance(item, dict) and item.get("type") in {"function_call", "custom_tool_call"}:
-                # The one call Codex runs takes the place of the first; any
-                # others the model asked for at the same time are dropped.
-                if not replaced_native_call:
-                    output.append(completed_tool_call)
-                    replaced_native_call = True
+                # The converted calls take the native calls' places in order; a
+                # native call that could not be converted is dropped.
+                replaced_native_call = True
+                if pending:
+                    output.append(pending.pop(0))
             elif isinstance(item, dict):
                 output.append(item)
-    result["output"] = output if replaced_native_call else [completed_tool_call]
+    output.extend(pending)
+    result["output"] = output if replaced_native_call else completed
     result["error"] = None
     result["incomplete_details"] = None
     return result
@@ -1607,14 +1647,18 @@ def _agent_turn_state(raw_input: object) -> tuple[str, str]:
         ensure_ascii=False,
     )
     fingerprint = hashlib.sha256(rendered.encode("utf-8")).hexdigest()
-    iteration_outputs = sum(
-        1
-        for item in raw_input[last_user_index + 1 :]
-        if isinstance(item, dict)
-        and item.get("type")
-        in {"function_call_output", "custom_tool_call_output"}
-    )
-    return fingerprint, str(iteration_outputs + 1)
+    # One iteration per round of tool results: parallel calls come back together.
+    rounds = 0
+    in_results = False
+    for item in raw_input[last_user_index + 1 :]:
+        is_result = isinstance(item, dict) and item.get("type") in {
+            "function_call_output",
+            "custom_tool_call_output",
+        }
+        if is_result and not in_results:
+            rounds += 1
+        in_results = is_result
+    return fingerprint, str(rounds + 1)
 
 
 def _append_before_terminal_compaction_trigger(

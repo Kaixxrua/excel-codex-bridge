@@ -254,6 +254,23 @@ class ExcelUpstreamTests(unittest.TestCase):
         self.assertNotEqual(first["metadata"]["turn_id"], next_turn["metadata"]["turn_id"])
         self.assertEqual(next_turn["metadata"]["agent_iteration"], "1")
 
+    def test_parallel_results_count_as_one_iteration(self):
+        user = {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "go"}]}
+
+        def call(n):
+            return {"type": "function_call", "call_id": f"call_{n}", "name": "exec_command", "arguments": "{}"}
+
+        def result(n):
+            return {"type": "function_call_output", "call_id": f"call_{n}", "output": "ok"}
+
+        def iteration(items):
+            body = excel_upstream.prepare_responses_body({"model": "gpt-5.6-sol-excel", "input": [user, *items]})
+            return body["metadata"]["agent_iteration"]
+
+        self.assertEqual(iteration([call(1), call(2), result(1), result(2)]), "2")
+        self.assertEqual(iteration([call(1), result(1), call(2), result(2)]), "3")
+        self.assertEqual(iteration([call(1), call(2), result(1), result(2), call(3), result(3)]), "3")
+
     def test_turn_identity_ignores_how_pictures_were_passed_on(self):
         def body(url: str) -> dict:
             return {
@@ -549,7 +566,7 @@ class ExcelUpstreamTests(unittest.TestCase):
             ),
         }
 
-    def test_several_calls_at_once_run_the_first(self):
+    def test_parallel_calls_are_all_converted_and_replayed(self):
         first = self._transport_call(
             "call_first", {"name": "exec_command", "arguments": {"cmd": "pwd"}}
         )
@@ -557,35 +574,63 @@ class ExcelUpstreamTests(unittest.TestCase):
             "call_second", {"name": "exec_command", "arguments": {"cmd": "ls"}}
         )
         response = {"output": [{"type": "reasoning", "id": "rs_1"}, first, second]}
+        source = {**self._exec_command_source(), "parallel_tool_calls": True}
 
-        tool_call = excel_upstream.extract_native_client_tool_call(
-            response, self._exec_command_source()
+        calls = excel_upstream.extract_native_client_tool_calls(response, source)
+
+        self.assertEqual([call["call_id"] for call in calls], ["call_first", "call_second"])
+        self.assertEqual([json.loads(call["arguments"]) for call in calls], [{"cmd": "pwd"}, {"cmd": "ls"}])
+        payload = excel_upstream.response_payload_with_tool_calls(response, calls)
+        self.assertEqual(
+            [(item["type"], item.get("call_id")) for item in payload["output"]],
+            [("reasoning", None), ("function_call", "call_first"), ("function_call", "call_second")],
         )
-
-        self.assertEqual(tool_call["call_id"], "call_first")
-        self.assertEqual(json.loads(tool_call["arguments"]), {"cmd": "pwd"})
-        payload = excel_upstream.response_payload_with_tool_call(response, tool_call)
-        calls = [item for item in payload["output"] if item["type"] == "function_call"]
-        self.assertEqual([call["name"] for call in calls], ["exec_command"])
         self.assertNotIn("run_officejs", json.dumps(payload))
+        # Codex sends both calls back, then both results.
         replay = excel_upstream.translate_input_items(
-            [tool_call, {"type": "function_call_output", "call_id": "call_first", "output": "/w"}],
+            [
+                *calls,
+                {"type": "function_call_output", "call_id": "call_first", "output": "/w"},
+                {"type": "function_call_output", "call_id": "call_second", "output": "a b"},
+            ],
             {"exec_command": "function"},
         )
-        self.assertEqual(replay[0], first)
+        self.assertEqual(replay[:2], [first, second])
+        self.assertEqual([item["call_id"] for item in replay[2:]], ["call_first", "call_second"])
 
-    def test_several_calls_at_once_skip_an_unusable_one(self):
+    def test_parallel_calls_turned_off_run_the_first(self):
+        calls = [
+            self._transport_call(f"call_{n}", {"name": "exec_command", "arguments": {"cmd": cmd}})
+            for n, cmd in enumerate(("pwd", "ls"))
+        ]
+        source = {**self._exec_command_source(), "parallel_tool_calls": False}
+
+        converted = excel_upstream.extract_native_client_tool_calls({"output": calls}, source)
+
+        self.assertEqual([call["call_id"] for call in converted], ["call_0"])
+        payload = excel_upstream.response_payload_with_tool_calls({"output": calls}, converted)
+        self.assertEqual([item["call_id"] for item in payload["output"]], ["call_0"])
+
+    def test_unusable_call_among_parallel_calls_is_left_out(self):
         broken = self._transport_call("call_broken", "not json")
         usable = self._transport_call(
             "call_usable", {"name": "exec_command", "arguments": {"cmd": "ls"}}
         )
 
-        tool_call = excel_upstream.extract_native_client_tool_call(
+        calls = excel_upstream.extract_native_client_tool_calls(
             {"output": [broken, usable]}, self._exec_command_source()
         )
 
-        self.assertEqual(tool_call["call_id"], "call_usable")
-        self.assertEqual(json.loads(tool_call["arguments"]), {"cmd": "ls"})
+        self.assertEqual([call["call_id"] for call in calls], ["call_usable"])
+        self.assertEqual(json.loads(calls[0]["arguments"]), {"cmd": "ls"})
+
+    def test_prompt_invites_parallel_calls_unless_turned_off(self):
+        source = self._exec_command_source()
+        allowed = excel_upstream._client_tool_protocol_instructions(source)
+        self.assertIn("separate run_officejs calls in the same response", allowed)
+        self.assertNotIn("call the outer native run_officejs tool once", allowed)
+        serial = excel_upstream._client_tool_protocol_instructions({**source, "parallel_tool_calls": False})
+        self.assertIn("call the outer native run_officejs tool once", serial)
 
     def test_run_officejs_transport_repairs_invalid_shell_backslashes(self):
         source = {
@@ -1951,7 +1996,7 @@ class ExcelStreamTransformTests(unittest.TestCase):
         self.assertEqual(completed["output"][1]["name"], "request_user_input")
         self.assertNotIn("run_officejs", json.dumps(events))
 
-    def test_several_native_calls_at_once_reach_codex_as_one(self):
+    def test_parallel_native_calls_reach_codex_as_parallel_calls(self):
         def transport(call_id, cmd):
             return {
                 "type": "function_call",
@@ -1986,13 +2031,16 @@ class ExcelStreamTransformTests(unittest.TestCase):
             {"tools": [{"type": "function", "name": "exec_command", "parameters": {"type": "object"}}]},
         )
 
-        done_items = [
-            payload["item"] for name, payload in events if name == "response.output_item.done"
-        ]
-        self.assertEqual([item["call_id"] for item in done_items], ["call_a"])
-        self.assertEqual(json.loads(done_items[0]["arguments"]), {"cmd": "pwd"})
+        done_events = [payload for name, payload in events if name == "response.output_item.done"]
+        self.assertEqual([event["item"]["call_id"] for event in done_events], ["call_a", "call_b"])
+        self.assertEqual([event["output_index"] for event in done_events], [0, 1])
+        self.assertEqual(
+            [json.loads(event["item"]["arguments"]) for event in done_events],
+            [{"cmd": "pwd"}, {"cmd": "ls"}],
+        )
         completed = dict(events)["response.completed"]["response"]
-        self.assertEqual([item["call_id"] for item in completed["output"]], ["call_a"])
+        self.assertEqual([item["call_id"] for item in completed["output"]], ["call_a", "call_b"])
+        self.assertEqual([name for name, _ in events].count("response.completed"), 1)
         self.assertNotIn("run_officejs", json.dumps(events))
 
     def test_plain_text_streams_through_incrementally(self):

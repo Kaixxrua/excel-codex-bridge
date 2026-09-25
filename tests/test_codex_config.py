@@ -29,7 +29,7 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual({m["slug"] for m in models}, set(excel_upstream.MODEL_IDS))
         for model in models:
             self.assertEqual(model["input_modalities"], ["text", "image"])
-            self.assertFalse(model["supports_parallel_tool_calls"])
+            self.assertTrue(model["supports_parallel_tool_calls"])
             self.assertLess(model["auto_compact_token_limit"], model["context_window"])
             efforts = [level["effort"] for level in model["supported_reasoning_levels"]]
             self.assertEqual(efforts, ["low", "medium", "high", "xhigh"])

@@ -135,7 +135,8 @@ def build_upstream_client() -> httpx.AsyncClient:
     proxy = _proxy_url()
     return httpx.AsyncClient(
         timeout=timeout,
-        limits=httpx.Limits(max_connections=8, max_keepalive_connections=4, keepalive_expiry=300.0),
+        # Every conversation or subagent that is generating holds one connection.
+        limits=httpx.Limits(max_connections=64, max_keepalive_connections=8, keepalive_expiry=300.0),
         verify=True,
         proxy=proxy,
         trust_env=proxy is None,
@@ -389,15 +390,18 @@ class Bridge:
             )
         translated = dict(payload)
         translated["model"] = model_id
-        tool_call = excel_upstream.extract_client_tool_call(
+        marker_call = excel_upstream.extract_client_tool_call(
             sse.extract_response_output_text(payload) or "",
             excel_upstream.client_tool_types(source_body),
         )
-        if tool_call is None:
-            tool_call = excel_upstream.extract_native_client_tool_call(payload, source_body)
-        if tool_call is not None:
-            translated = excel_upstream.response_payload_with_tool_call(
-                payload, tool_call, model_id=model_id
+        tool_calls = (
+            [marker_call]
+            if marker_call is not None
+            else excel_upstream.extract_native_client_tool_calls(payload, source_body)
+        )
+        if tool_calls:
+            translated = excel_upstream.response_payload_with_tool_calls(
+                payload, tool_calls, model_id=model_id
             )
             sse.normalize_response_reasoning_for_client(translated)
         return JSONResponse(content=translated)

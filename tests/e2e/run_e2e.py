@@ -15,6 +15,10 @@ call round trip and the environment Codex hands to its commands.
 next to it, the way the desktop app picks up ``config.toml``; the user's own
 config must come back byte for byte when the desktop window stops.
 
+``--parallel`` makes the first answer two independent ``run_officejs`` calls
+at once: Codex must run both, and the bridge must replay both native calls
+followed by both results in the next request.
+
 ``--images`` also attaches a picture (``codex exec -i``).  Like the real
 backend, the fake one refuses a user message with an inline picture; the
 bridge must then upload it once to the attachments endpoint, the way the
@@ -59,10 +63,15 @@ CODEX_ARGS = [
 PYTHON = "python" if sys.platform == "win32" else "python3"
 # Prints a marker only a real execution can produce, plus the PYTHONPATH Codex
 # gave the command.  Works in bash, PowerShell and cmd alike.
-PROBE = (
-    f"{PYTHON} -c \"import os; print('bridge-e2e-' + str(6*7), "
-    "'PP=[' + os.environ.get('PYTHONPATH', '') + ']')\""
-)
+def probe(expression: str) -> str:
+    return (
+        f"{PYTHON} -c \"import os; print('bridge-e2e-' + str({expression}), "
+        "'PP=[' + os.environ.get('PYTHONPATH', '') + ']')\""
+    )
+
+
+PROBE = probe("6*7")  # bridge-e2e-42
+SECOND_PROBE = probe("6*7+1")  # bridge-e2e-43
 USAGE = {
     "input_tokens": 120,
     "input_tokens_details": {"cached_tokens": 0},
@@ -103,17 +112,25 @@ def inline_in_user_message(body: dict) -> bool:
                for item in body.get("input", []) if isinstance(item, dict))
 
 
-def shell_call(raw_request: str) -> tuple[str, dict]:
+def shell_call(raw_request: str, command: str = PROBE) -> tuple[str, dict]:
     """Call whichever shell tool this Codex build declared."""
     if "exec_command" in raw_request:
-        return "exec_command", {"cmd": PROBE}
+        return "exec_command", {"cmd": command}
     if "shell_command" in raw_request:
-        return "shell_command", {"command": PROBE}
-    return "shell", {"command": ["bash", "-lc", PROBE] if sys.platform != "win32" else ["cmd", "/c", PROBE]}
+        return "shell_command", {"command": command}
+    return "shell", {"command": ["bash", "-lc", command] if sys.platform != "win32" else ["cmd", "/c", command]}
+
+
+def transport_call(n: int, name: str, arguments: dict) -> dict:
+    code = json.dumps({"name": name, "arguments": arguments})
+    return {
+        "type": "function_call", "id": f"fc_{n}", "call_id": f"call_{n}",
+        "name": "run_officejs", "arguments": json.dumps({"code": code}), "status": "completed",
+    }
 
 
 class FakeExcelBackend:
-    def __init__(self) -> None:
+    def __init__(self, parallel: bool = False) -> None:
         self.requests: list[dict] = []
         self.unexpected: list[str] = []
         self.shell_tool = ""
@@ -141,29 +158,29 @@ class FakeExcelBackend:
             if n == 1:
                 name, arguments = shell_call(raw)
                 self.shell_tool = name
-                code = json.dumps({"name": name, "arguments": arguments})
-                call_args = json.dumps({"code": code})
-                item = {
-                    "type": "function_call", "id": "fc_1", "call_id": "call_1",
-                    "name": "run_officejs", "arguments": call_args, "status": "completed",
-                }
-                events = [
-                    sse("response.created", {"type": "response.created",
-                        "response": {"id": "resp_1", "status": "in_progress", "output": []}}),
-                    sse("response.output_item.added", {"type": "response.output_item.added", "output_index": 0,
-                        "item": {**item, "arguments": "", "status": "in_progress"}}),
-                    sse("response.function_call_arguments.delta", {"type": "response.function_call_arguments.delta",
-                        "output_index": 0, "item_id": "fc_1", "delta": call_args}),
-                    sse("response.function_call_arguments.done", {"type": "response.function_call_arguments.done",
-                        "output_index": 0, "item_id": "fc_1", "arguments": call_args}),
-                    sse("response.output_item.done", {"type": "response.output_item.done",
-                        "output_index": 0, "item": item}),
-                    sse("response.completed", {"type": "response.completed", "response": {
-                        "id": "resp_1", "status": "completed", "model": body.get("model"),
-                        "output": [item], "usage": USAGE}}),
-                ]
+                items = [transport_call(1, name, arguments)]
+                if parallel:
+                    items.append(transport_call(2, *shell_call(raw, SECOND_PROBE)))
+                events = [sse("response.created", {"type": "response.created",
+                              "response": {"id": "resp_1", "status": "in_progress", "output": []}})]
+                for index, item in enumerate(items):
+                    events += [
+                        sse("response.output_item.added", {"type": "response.output_item.added",
+                            "output_index": index, "item": {**item, "arguments": "", "status": "in_progress"}}),
+                        sse("response.function_call_arguments.delta", {
+                            "type": "response.function_call_arguments.delta", "output_index": index,
+                            "item_id": item["id"], "delta": item["arguments"]}),
+                        sse("response.function_call_arguments.done", {
+                            "type": "response.function_call_arguments.done", "output_index": index,
+                            "item_id": item["id"], "arguments": item["arguments"]}),
+                        sse("response.output_item.done", {"type": "response.output_item.done",
+                            "output_index": index, "item": item}),
+                    ]
+                events.append(sse("response.completed", {"type": "response.completed", "response": {
+                    "id": "resp_1", "status": "completed", "model": body.get("model"),
+                    "output": items, "usage": USAGE}}))
             else:
-                seen = "bridge-e2e-42" in raw
+                seen = "bridge-e2e-42" in raw and (not parallel or "bridge-e2e-43" in raw)
                 text = "done: tool output seen" if seen else "done: tool output MISSING"
                 msg = {"type": "message", "id": f"msg_{n}", "role": "assistant", "status": "completed",
                        "content": [{"type": "output_text", "text": text, "annotations": []}]}
@@ -307,6 +324,7 @@ def main() -> int:
     parser.add_argument("--model", default="gpt-5.6-sol-excel")
     parser.add_argument("--desktop", action="store_true", help="check `desktop` mode with a plain codex")
     parser.add_argument("--images", action="store_true", help="also attach a picture")
+    parser.add_argument("--parallel", action="store_true", help="answer with two tool calls at once")
     parser.add_argument("--timeout", type=int, default=900, help="seconds for each long step")
     parser.add_argument("launcher", nargs=argparse.REMAINDER)
     args = parser.parse_args()
@@ -320,7 +338,7 @@ def main() -> int:
     webview = write_webview_session(root / "webview", time.time() + 3 * 86400, account="e2e-account")
     project = root / "project"
     project.mkdir()
-    backend = FakeExcelBackend()
+    backend = FakeExcelBackend(parallel=args.parallel)
     server, port = start_server(backend.app)
 
     env = dict(os.environ)
@@ -357,6 +375,20 @@ def main() -> int:
          "Codex's commands saw a different PYTHONPATH"),
         (not backend.unexpected, f"unexpected upstream paths: {backend.unexpected}"),
     ]
+    if args.parallel and len(backend.requests) >= 2:
+        replayed = [(item.get("type"), item.get("call_id") if item.get("type") == "function_call_output"
+                     else item.get("id"))
+                    for item in backend.requests[1].get("input", [])
+                    if isinstance(item, dict)
+                    and (item.get("name") == "run_officejs" or item.get("type") == "function_call_output")]
+        checks += [
+            (len(backend.requests) == 2, f"expected exactly 2 upstream requests, got {len(backend.requests)}"),
+            (replayed == [("function_call", "fc_1"), ("function_call", "fc_2"),
+                          ("function_call_output", "call_1"), ("function_call_output", "call_2")],
+             f"both native calls then both results should be replayed, got {replayed}"),
+            (backend.requests[1].get("metadata", {}).get("agent_iteration") == "2",
+             "parallel results should count as one agent iteration"),
+        ]
     if args.images:
         announced = "Pictures: sent to OpenAI"
         sent = [pictures(body.get("input")) for body in backend.requests]

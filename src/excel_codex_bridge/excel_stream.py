@@ -5,7 +5,8 @@ Extracted verbatim (apart from imports) from ghcp_proxy's ``proxy.py``
 describes Codex's tools in the prompt and the model calls them through the
 add-in's ``run_officejs`` function.  This transform holds back anything that
 may turn out to be such a call and, at ``response.completed``, re-emits it as
-the ``function_call`` / ``custom_tool_call`` Codex actually declared.
+the ``function_call`` / ``custom_tool_call`` Codex actually declared, one for
+each call when the model makes several at once.
 
 Two additions of this project's own keep Codex from sending a request again
 when the answer already arrived: Codex takes a stream without
@@ -60,12 +61,14 @@ async def _with_ticks(messages, every: float):
             await aclose()
 
 
-def excel_tool_call_event_bytes(
-    tool_call: dict,
-    response_payload: dict,
-    *,
-    output_index: int,
-) -> list[bytes]:
+def _completed_event_bytes(response_payload: dict) -> bytes:
+    return format_translation.sse_encode(
+        "response.completed",
+        {"type": "response.completed", "response": response_payload},
+    )
+
+
+def _tool_call_item_event_bytes(tool_call: dict, *, output_index: int) -> list[bytes]:
     item = dict(tool_call)
     item["status"] = "in_progress"
     if tool_call["type"] == "function_call":
@@ -113,13 +116,6 @@ def excel_tool_call_event_bytes(
                 "item": {**tool_call, "status": "completed"},
             },
         ),
-        format_translation.sse_encode(
-            "response.completed",
-            {
-                "type": "response.completed",
-                "response": response_payload,
-            },
-        ),
     ]
 
 
@@ -148,7 +144,6 @@ def excel_tool_stream_transform(
         held_events: list[bytes] = []
         delta_template: dict = {}
         done_seen = False
-        native_tool_output_index: int | None = None
         started_response: dict | None = None
         keepalive: bytes | None = None
         items_added = 0
@@ -176,55 +171,48 @@ def excel_tool_stream_transform(
             response = response if isinstance(response, dict) else None
             if response:
                 format_translation.normalize_response_reasoning_for_client(response)
-            tool_call = None
+            tool_calls: list[dict] = []
             if event_type == "response.completed":
                 completed_text = full_text or (
                     format_translation.extract_response_output_text(response)
                     if response
                     else ""
                 )
-                tool_call = excel_upstream.extract_client_tool_call(
+                marker_call = excel_upstream.extract_client_tool_call(
                     completed_text or "",
                     allowed_tools,
                 )
-                if tool_call is None:
-                    tool_call = excel_upstream.extract_native_client_tool_call(
+                if marker_call is not None:
+                    tool_calls = [marker_call]
+                else:
+                    tool_calls = excel_upstream.extract_native_client_tool_calls(
                         response,
                         source_body,
                     )
-                    asked = sum(
-                        1
-                        for item in (response or {}).get("output") or []
-                        if isinstance(item, dict)
-                        and item.get("type") in {"function_call", "custom_tool_call"}
-                    )
-                    if tool_call is not None and asked > 1:
-                        log.info(
-                            "the model asked for %d tool calls at once; running one, "
-                            "it asks again for the rest",
-                            asked,
-                        )
-            if tool_call is not None:
+            if tool_calls:
                 held_events.clear()
                 emitted_upto = len(full_text)
-                response_payload = excel_upstream.response_payload_with_tool_call(
+                response_payload = excel_upstream.response_payload_with_tool_calls(
                     response,
-                    tool_call,
+                    tool_calls,
                     model_id=excel_upstream.excel_model_id(source_body.get("model"))
                     or excel_upstream.MODEL_ID,
                 )
-                tool_output_index = (
-                    native_tool_output_index
-                    if native_tool_output_index is not None
-                    else 0
-                )
-                chunks.extend(
-                    excel_tool_call_event_bytes(
-                        tool_call,
-                        response_payload,
-                        output_index=tool_output_index,
+                # Each call keeps its place in the output, after any reasoning
+                # or commentary already streamed.
+                positions = {
+                    item.get("call_id"): index
+                    for index, item in enumerate(response_payload["output"])
+                    if isinstance(item, dict)
+                }
+                for tool_call in tool_calls:
+                    chunks.extend(
+                        _tool_call_item_event_bytes(
+                            tool_call,
+                            output_index=positions.get(tool_call["call_id"], 0),
+                        )
                     )
-                )
+                chunks.append(_completed_event_bytes(response_payload))
                 return chunks
             # Not a tool call after all: release everything that was held
             # back so the client still receives the full assistant text.
@@ -366,8 +354,6 @@ def excel_tool_stream_transform(
                         item.get("type") if isinstance(item, dict) else None
                     )
                     if item_type in {"function_call", "custom_tool_call"}:
-                        if isinstance(event_output_index, int) and event_output_index >= 0:
-                            native_tool_output_index = event_output_index
                         held_events.append(encoded)
                         continue
                     if (

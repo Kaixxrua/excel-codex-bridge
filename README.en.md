@@ -35,6 +35,10 @@ Codex CLI ──(Responses API, 127.0.0.1)──▶ excel-codex-bridge ──(HT
 - **Tool calls.** The Excel backend rejects client-defined tools, so the bridge describes
   Codex's tools (shell, apply_patch, …) in the prompt; the model calls them through the
   backend's native `run_officejs`, and the bridge turns those back into Codex tool calls.
+  Calls that do not depend on each other (reading several files, independent commands) come in
+  one go and Codex runs them at the same time; file edits still happen one after another.
+- **Several sessions at once.** Codex windows, desktop conversations and subagents can share one
+  bridge and work at the same time without queuing.
 - **Pictures.** Pictures go to OpenAI only, like the rest of the request. Where the backend will
   not take them inline, the bridge uploads them to OpenAI the way the add-in's Upload file button
   does; see [Pictures](#pictures).
@@ -277,12 +281,9 @@ running from source, `git pull` is enough.
 
 ## Limitations
 
-- Tools run one at a time, not in parallel. Running commands (PowerShell / shell), editing files
-  and viewing images are all tool calls and all work; the model just makes them one after another,
-  so multi-step tasks take a little longer.
 - Responses API only; there is no `/responses/compact` endpoint.
 - The Excel backend adds a fixed prefix of about 22k tokens to every request (mostly served from
-  cache); usage counts against your ChatGPT plan.
+  cache); usage counts against your ChatGPT plan, and more sessions at once use it up faster.
 - It relies on a private backend of the Excel add-in and may break whenever OpenAI changes it.
 
 ## Risks and disclaimer
