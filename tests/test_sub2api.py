@@ -13,7 +13,7 @@ import pytest
 import zstandard
 
 from excel_codex_bridge import cli, excel_upstream, sub2api, sub2api_cli
-from helpers import session_headers, write_webview_session
+from helpers import session_headers, write_codex_login, write_webview_session
 from test_server import text_stream
 
 API_KEY = "test-api-" + "a" * 40
@@ -235,6 +235,46 @@ def test_ssh_sync_uses_stdin_not_arguments_or_logs(monkeypatch, tmp_path):
     assert captured["command"][-1].startswith("sudo -n docker exec -i excel-sub2api")
     assert "StrictHostKeyChecking=no" not in repr(captured["command"])
     assert "shell" not in captured
+
+
+def test_push_session_builds_reader_with_login_choice(monkeypatch):
+    seen = {}
+
+    class FakeReader:
+        def __init__(self, *args, **kwargs):
+            seen["login"] = kwargs.get("login")
+
+    monkeypatch.setattr(sub2api_cli, "SessionReader", FakeReader)
+    monkeypatch.setattr(sub2api_cli, "push_session",
+                        lambda args, reader: {"configured": True, "expired": False})
+    assert sub2api_cli.main(["push-session", "--ssh", "operator@my-vps", "--login", "codex"]) == 0
+    assert seen["login"] == "codex"
+
+
+def test_push_session_sends_codex_sign_in_without_excel(monkeypatch, tmp_path):
+    from excel_codex_bridge.session import SessionReader
+    # A machine with no Excel session anywhere; only Codex's own login exists.
+    auth = write_codex_login(tmp_path / "auth.json", time.time() + 3600, account="codex-acct")
+    reader = SessionReader(login="codex", codex_auth=auth)
+    args = sub2api_cli._parser().parse_args(
+        ["push-session", "--ssh", "operator@my-vps", "--login", "codex"]
+    )
+    assert args.login == "codex"
+    captured = {}
+
+    def run(command, **kwargs):
+        captured.update(command=command, **kwargs)
+        return SimpleNamespace(returncode=0, stdout=json.dumps({
+            "configured": True, "expired": False
+        }).encode())
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert sub2api_cli.push_session(args, reader)["configured"]
+    payload = json.loads(captured["input"])
+    assert payload["headers"]["authorization"].startswith("Bearer ")
+    assert payload["headers"]["chatgpt-account-id"] == "codex-acct"
+    # The Excel-plugin client identity still rides along, so the backend accepts it.
+    assert payload["headers"]["x-openai-internal-basispoints-client-product"] == "basispoints-excel-plugin"
 
 
 def test_control_plane_never_uses_proxy_or_redirects(monkeypatch):

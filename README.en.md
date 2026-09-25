@@ -97,8 +97,10 @@ Pick one with `--login` or the `EXCEL_BRIDGE_LOGIN` environment variable:
   expires, and how to renew it (`codex login` for Codex's; `excel-codex login` for Excel's).
 - The bridge never refreshes or writes a token; when Codex's expires, run `codex login` yourself
   (in `auto` it falls back to Excel meanwhile).
-- [SUB2API remote sync](docs/sub2api.en.md) only ever sends the Excel add-in's session; Codex's
-  sign-in never leaves this machine.
+- [SUB2API remote sync](docs/sub2api.en.md) can now send Codex's sign-in too: `push-session --login`
+  (default `auto`: Codex's, then the Excel add-in's), so a machine without Excel — a server — can push
+  as well. Note this sends the sign-in you choose to the server you name — a credential export that
+  happens only when you run the sync command, and only to a machine you trust.
 
 > **Verified** (2026-09-25): tested with Codex CLI 0.156.1 — after a fresh `codex login` the bps
 > backend returns 200, so Codex's own sign-in works directly, with no Excel installed. Should a

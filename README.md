@@ -79,7 +79,9 @@ Codex CLI ──(Responses API, 127.0.0.1)──▶ excel-codex-bridge ──(HT
 - 登录过期或不可用时，`excel-codex status` 会告诉你当前用的是哪一份、何时过期，并给出续期建议
   （Codex 那份重新 `codex login`；Excel 那份 `excel-codex login`）。
 - 桥接从不刷新或写入任何 token；Codex 那份到期后请自行 `codex login`（`auto` 下会自动回退到 Excel）。
-- [SUB2API 远端同步](docs/sub2api.md)只会送 Excel 加载项的会话，Codex 的登录不会离开本机。
+- [SUB2API 远端同步](docs/sub2api.md)也能送 Codex 的登录了：`push-session --login`（默认同 `auto`：先 Codex 再 Excel），
+  所以没有 Excel 的机器（比如服务器）也能推。注意：这条命令会把**你选中的那份登录**发往你指定的服务器——
+  这是你显式运行同步命令后才发生的凭据外发，只发给你自己信任的机器。
 
 > **已验证**（2026-09-25）：用 Codex CLI 0.156.1 实测，重新 `codex login` 后 bps 后端返回 200，
 > Codex 自己的登录可直接用、无需安装 Excel。万一日后后端变动拒绝它，`auto` 仍会自动回退到 Excel 会话。

@@ -8,7 +8,7 @@
 ```text
 Codex / Responses 客户端 → SUB2API → excel-sub2api:8000 → bps.openai.com
                                             ↑
-已登录 Excel 的电脑 → SSH → docker exec → 回环管理端点 → 内存会话
+已登录的电脑（Codex 或 Excel）→ SSH → docker exec → 回环管理端点 → 内存会话
 ```
 
 ## 安全边界（先读）
@@ -69,9 +69,10 @@ docker exec excel-sub2api excel-sub2api session-status
 如果 SUB2API 拒绝私有地址，要按该版本的文档只授权这个 sidecar 主机/端口的出站访问；
 **不要为此全局关闭 SSRF 防护**。这里不自动修改 SUB2API 的安全策略。
 
-## 3. 从 Excel 电脑同步会话
+## 3. 同步会话（Codex 或 Excel 登录）
 
-先在 Excel 的 ChatGPT 加载项登录。免安装版/源码启动器也可通过
+先在本机准备好一份 ChatGPT 登录，二选一：`codex login`（Codex 自己的登录，无需 Excel），
+或在 Excel 的 ChatGPT 加载项里登录。免安装版/源码启动器也可通过
 `excel-codex.exe sub2api ...` / `excel-codex.cmd sub2api ...` 使用同一套子命令。
 下面为安装 Python 包后的写法：
 
@@ -79,18 +80,24 @@ docker exec excel-sub2api excel-sub2api session-status
 # 先手动 SSH 一次，核验主机指纹、配置密钥登录以及 Docker 权限。
 ssh operator@your-vps
 
-# 在装有 Excel 的电脑上执行，而不是在 VPS 上执行。
+# 在装有 Excel 或已 `codex login` 的电脑上执行，而不是在 VPS 上执行。
 excel-sub2api push-session --ssh operator@your-vps
+# 无 Excel 的机器（比如服务器），显式只用 Codex 的登录：
+excel-sub2api push-session --ssh operator@your-vps --login codex
 # 如果 Docker 需要非交互 sudo：
 excel-sub2api push-session --ssh operator@your-vps --sudo
-# 每分钟同步；适合 Excel 刷新会话，以及服务端重启后的重新导入。Ctrl+C 停止。
+# 每分钟同步；适合会话刷新，以及服务端重启后的重新导入。Ctrl+C 停止。
 excel-sub2api push-session --ssh operator@your-vps --sudo --watch 60
 ```
 
+`--login auto`（默认）先试 Codex 的登录、不行再用 Excel 的；`--login codex` / `--login excel` 只用其一，
+也可用环境变量 `EXCEL_BRIDGE_LOGIN`。**这条命令会把你选中的那份登录发往目标服务器**——包括用 Codex
+登录时，Codex 的 token 也会离开本机去到你指定的服务器；只连你自己信任的机器。
+
 可用参数：`--ssh-port 2222`、`--identity-file <私钥路径>`、`--container <容器名>`、
-`--webview-dir <Microsoft/Office目录>`。原始 IPv6 目标请在 SSH config 中定义别名。
-同步命令不会自动打开 Excel，也不会刷新/延长订阅 token；需要时用原有 `excel-codex login`
-或手动打开 Excel 加载项重新登录。监视模式会在失败时继续重试，但不会打印请求内容。
+`--webview-dir <Microsoft/Office目录>`、`--login <auto|codex|excel>`。原始 IPv6 目标请在 SSH config
+中定义别名。同步命令不会自动打开 Excel，也不会刷新/延长任何 token；需要时用 `codex login`（Codex 那份）
+或 `excel-codex login` / 手动打开 Excel 加载项重新登录。监视模式会在失败时继续重试，但不会打印请求内容。
 
 ## 接口与限制
 

@@ -16,7 +16,7 @@ from pathlib import Path
 import httpx
 import uvicorn
 
-from .session import SessionReader
+from .session import LOGINS, LOGIN_ENV, SessionReader
 from .sub2api import GatewayKeys, MAX_SESSION_BYTES, SESSION_PATH, create_app, read_secret
 
 
@@ -57,7 +57,7 @@ def _parser():
     serve.add_argument("--port", type=_port, default=8000)
     init = sub.add_parser("init-secrets", help="create two random secret files; never overwrite")
     init.add_argument("directory", type=Path)
-    push = sub.add_parser("push-session", help="send your local Excel session to your server over SSH")
+    push = sub.add_parser("push-session", help="send your local ChatGPT sign-in to your server over SSH")
     push.add_argument("--ssh", required=True, type=_ssh_target, help="trusted SSH host alias or user@host")
     push.add_argument("--ssh-port", type=_port)
     push.add_argument("--identity-file", type=Path)
@@ -65,6 +65,13 @@ def _parser():
     push.add_argument("--port", type=_port, default=8000, help="port inside the sidecar container")
     push.add_argument("--sudo", action="store_true", help="use sudo -n for remote Docker")
     push.add_argument("--webview-dir", type=Path)
+    push.add_argument(
+        "--login",
+        choices=LOGINS,
+        help="which ChatGPT sign-in to send: auto (Codex's, else the Excel add-in's; the default), "
+        f"codex or excel (default: ${LOGIN_ENV} or auto). Codex's sign-in lets a machine without "
+        "Excel push a session; the chosen sign-in is sent to your server.",
+    )
     push.add_argument("--watch", type=_watch_interval, metavar="SECONDS",
                       help="resync until stopped; also restores sessions after container restarts")
     for command in ("import-session", "session-status", "clear-session"):
@@ -121,7 +128,7 @@ def control_request(command: str, port: int, raw: bytes | None = None) -> dict:
 def session_payload(reader: SessionReader) -> bytes:
     status = reader.refresh(force=True)
     if reader.last_error or not status.get("configured") or status.get("expired"):
-        raise RuntimeError("No usable local Excel session; sign in with excel-codex login first")
+        raise RuntimeError(f"No usable ChatGPT sign-in to send. {reader.hint()}")
     headers = reader.store.request_headers(stream=False)
     payload = json.dumps({"headers": headers, "tools_version_id": reader.store.tools_version_id()}).encode()
     if len(payload) > MAX_SESSION_BYTES:
@@ -169,16 +176,17 @@ def main(argv: list[str] | None = None) -> int:
             init_secrets(args.directory)
             print("Created api-key and admin-key; keep them private and out of Git.")
         elif args.command == "push-session":
-            # Only the Excel add-in's session goes to the sidecar, as before; Codex's
-            # own sign-in stays on this computer.
-            reader = SessionReader(webview_root=args.webview_dir, login="excel")
+            # Sends the sign-in that --login picks (default: Codex's, else the Excel
+            # add-in's), so a machine without Excel can push a session too. The chosen
+            # sign-in leaves this computer for the server you name; nothing else does.
+            reader = SessionReader(webview_root=args.webview_dir, login=args.login)
             while True:
                 try:
                     print(json.dumps(push_session(args, reader)), flush=True)
                 except (RuntimeError, OSError, subprocess.SubprocessError):
                     if not args.watch:
                         raise
-                    print("Session sync failed; check Excel sign-in and SSH/sidecar access. Retrying.",
+                    print("Session sync failed; check your ChatGPT sign-in and SSH/sidecar access. Retrying.",
                           file=sys.stderr, flush=True)
                 if not args.watch:
                     break
