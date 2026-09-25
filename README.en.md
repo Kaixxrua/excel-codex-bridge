@@ -270,3 +270,5 @@ The Excel session reader and the Basispoints protocol adapter are extracted from
 [Nonary/ghcp_proxy](https://github.com/Nonary/ghcp_proxy) (Unlicense, based on commit `ad23ce2`;
 original license in [UPSTREAM-LICENSE](UPSTREAM-LICENSE)). This project is released under the
 [Unlicense](LICENSE) as well.
+
+Thanks to the [LINUX DO](https://linux.do) community.
