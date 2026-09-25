@@ -35,8 +35,6 @@ You are Codex, a coding agent running in the user's terminal. You and the user s
 """
 
 CATALOG_ORDER = ("gpt-5.6-sol-excel", "gpt-6-astra-excel", "gpt-5.6-terra-excel", "gpt-5.6-luna-excel")
-# Listed, but not yet confirmed to be served by the Excel backend.
-EXPERIMENTAL_MODELS = frozenset({"gpt-6-astra-excel"})
 
 _REASONING_LEVEL_DESCRIPTIONS = {
     "low": "Fast responses with lighter reasoning",
@@ -64,13 +62,12 @@ def catalog_payload() -> dict[str, object]:
         context_window = int(caps["context_window"])
         # Codex compacts at this many tokens; keep a build buffer under the window.
         auto_compact = min(int(caps["auto_compact_token_limit"]), context_window - 8000)
-        experimental = " · experimental" if model_id in EXPERIMENTAL_MODELS else ""
         models.append(
             {
                 "slug": model_id,
                 "display_name": caps["display_name"],
                 "description": (
-                    f"ChatGPT Excel add-in session · {context_window:,} token context{experimental} · "
+                    f"ChatGPT Excel add-in session · {context_window:,} token context · "
                     "counts against your ChatGPT plan, not API billing."
                 ),
                 "default_reasoning_level": "medium",

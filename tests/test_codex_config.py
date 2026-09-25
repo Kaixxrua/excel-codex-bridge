@@ -35,8 +35,7 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(efforts, ["low", "medium", "high", "xhigh"])
         luna = next(m for m in models if m["slug"] == "gpt-5.6-luna-excel")
         self.assertEqual(luna["context_window"], 200_000)
-        astra = next(m for m in models if m["slug"] == "gpt-6-astra-excel")
-        self.assertIn("experimental", astra["description"])
+        self.assertFalse(any("experimental" in m["description"] for m in models))
 
     def test_catalog_order_covers_every_served_model(self):
         self.assertEqual(sorted(codex_config.CATALOG_ORDER), sorted(excel_upstream.MODEL_IDS))
