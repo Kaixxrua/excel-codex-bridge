@@ -81,8 +81,8 @@ Codex CLI ──(Responses API, 127.0.0.1)──▶ excel-codex-bridge ──(HT
 - 桥接从不刷新或写入任何 token；Codex 那份到期后请自行 `codex login`（`auto` 下会自动回退到 Excel）。
 - [SUB2API 远端同步](docs/sub2api.md)只会送 Excel 加载项的会话，Codex 的登录不会离开本机。
 
-> **注意**：Excel 后端是否接受 Codex CLI 自己的登录 token 尚未在真实后端上验证。若不接受，`auto`
-> 会自动回退到 Excel 会话；只想用经过验证的老链路，设 `--login excel` 即可。
+> **已验证**（2026-09-25）：用 Codex CLI 0.156.1 实测，重新 `codex login` 后 bps 后端返回 200，
+> Codex 自己的登录可直接用、无需安装 Excel。万一日后后端变动拒绝它，`auto` 仍会自动回退到 Excel 会话。
 
 此想法来自 [MIKUbiu/bps-local](https://github.com/MIKUbiu/bps-local)，本项目是它的一个独立实现，
 详见[致谢与许可](#致谢与许可)。

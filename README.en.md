@@ -100,9 +100,9 @@ Pick one with `--login` or the `EXCEL_BRIDGE_LOGIN` environment variable:
 - [SUB2API remote sync](docs/sub2api.en.md) only ever sends the Excel add-in's session; Codex's
   sign-in never leaves this machine.
 
-> **Note:** whether the Excel backend accepts Codex CLI's own sign-in token is untested against
-> the real backend. If it does not, `auto` falls back to the Excel session; for the verified path
-> only, use `--login excel`.
+> **Verified** (2026-09-25): tested with Codex CLI 0.156.1 — after a fresh `codex login` the bps
+> backend returns 200, so Codex's own sign-in works directly, with no Excel installed. Should a
+> future backend change refuse it, `auto` still falls back to the Excel session.
 
 This idea comes from [MIKUbiu/bps-local](https://github.com/MIKUbiu/bps-local); this project is a
 separate implementation of it, see [Credits and license](#credits-and-license).
