@@ -343,6 +343,16 @@ class BatchFileTests(unittest.TestCase):
         # Handed over without `call`, so apply.cmd may replace this file.
         self.assertIn('\r\n"%~dp0.update\\apply.cmd" %*', text)
 
+    def test_restore_launcher(self):
+        text = self.check((REPO / "excel-codex-restore.cmd").read_bytes())
+        self.assertIn('"%~dp0excel-codex.exe" restore %*', text)
+        self.assertIn('call "%~dp0excel-codex.cmd" restore %*', text)
+        # Nothing is downloaded on the way.
+        commands = [line for line in text.splitlines() if not line.lower().startswith("rem")]
+        self.assertFalse([line for line in commands if "update" in line])
+        # Double-clicked, the window stays until what it did is read.
+        self.assertIn("\r\npause\r\n", text)
+
 
 class CliTests(unittest.TestCase):
     def setUp(self):

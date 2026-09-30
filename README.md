@@ -121,6 +121,7 @@ excel-codex status                            看当前用哪份登录、是否�
 excel-codex --login codex                      只用 Codex 自己的登录（不碰 Excel）
 excel-codex login                             打开 Excel 的 ChatGPT 面板登录或续期
 excel-codex desktop                           让 Codex 桌面版 / IDE 插件走 Excel 链路
+excel-codex restore                           恢复官方 Codex 配置（撤掉桥接的全部设置）
 excel-codex threads migrate                   把桥接自己名下的对话并进共享列表（启动时会自动做）
 excel-codex threads migrate --from OpenAI     把中转站 provider（OpenAI）名下的对话并到 openai
 ```
@@ -202,7 +203,7 @@ TLS 证书校验始终开启。Codex 到桥接走 `127.0.0.1`，启动器会自�
   等行只是加注释停用，恢复时逐字节还原。
 - `config.toml` 是所有 Codex 客户端共用的，窗口开着期间在终端直接运行 `codex` 也会走 Excel 链路。
 - 想长期保持：`excel-codex desktop --keep-config`，之后用 `excel-codex desktop --off` 恢复
-  （窗口意外被杀、配置没还原时也用它）。
+  （窗口意外被杀、配置没还原时也用它，或者双击 `excel-codex-restore.cmd`，见[恢复官方 Codex 配置](#恢复官方-codex-配置)）。
 - 换模型：`excel-codex desktop --model gpt-5.6-terra`；换端口：`--port`。
 - 窗口开着期间会关掉 Codex 的 Apps 和插件推荐（`features.apps`、`features.remote_plugin`），
   随配置一起恢复。Codex 用 ChatGPT 登录时，打开对话要等 chatgpt.com 回应这两项（Apps 最多 30 秒，
@@ -268,6 +269,24 @@ before finishing it (RemoteProtocolError: …)`**：模型思考的这段时间�
 
 也可以全手动：`excel-codex serve` 常驻桥接，再把 `excel-codex print-config` 输出的片段加进
 `config.toml`，不用时删掉。`serve` 每次启动都会把片段指向的模型列表文件更新成当前版本的（0.5.15 起）。
+
+### 恢复官方 Codex 配置
+
+不想再用桥接、要让 Codex 回到官方链路：双击免安装包里的 **`excel-codex-restore.cmd`**（macOS 双击
+`excel-codex-restore.command`；Linux 或从源码运行 `./excel-codex-restore.command`，也可以运行
+`excel-codex restore`）。它不联网、不启动桥接，做完下面几件事就结束（0.5.19 起）：
+
+- 撤掉 `excel-codex desktop` 写进 `config.toml` 的内容，被它停用的原有行逐字节恢复（和 `desktop --off` 一样）。
+- 用别的方式加进去的桥接设置（比如手动粘贴的 `print-config` 片段）也注释掉：`model_provider = "excel-bridge"`、
+  整张 `[model_providers.excel-bridge]` 表、带 `-excel` 的模型名、桥接的模型列表 `model_catalog_json`，
+  以及指向本机桥接的 `openai_base_url`（同一文件里还有上面这些桥接设置，或者它就是桥接的默认地址
+  `http://127.0.0.1:8765/v1` 时才算）。注释之前会把原文件存成 `config.toml.before-excel-codex-restore`；
+  被注释的行以 `# excel-codex restore took out: ` 开头，删掉这个前缀就恢复那一行。
+- Codex 登录过的话，把桥接自己名下的对话并进官方列表（和 `threads migrate` 一样，要求 Codex 已完全退出）。
+- Windows 上把系统时区改回桥接第一次改动之前的（和 `timezone restore` 一样）。
+
+不是桥接的设置（比如中转站的 `openai_base_url`、自定义的 `model_provider`）不会动，只在窗口里列出来。
+做完后完全退出 Codex 桌面版再打开（IDE 插件重新加载窗口），它才会按官方配置连接。
 
 ## 会话互通
 
@@ -402,6 +421,7 @@ Codex 会把本机的时区和日期写进每个对话（`<environment_context>`
    - Codex CLI：在项目目录运行 `<解压目录>/excel-codex`，参数同上；也可以把解压目录加进 `PATH`。
    - Codex 桌面版：双击 `excel-codex-desktop.command`，然后按 `Cmd+Q` 完全退出 Codex 桌面版再打开。
      终端窗口保持开着，用完关掉窗口或按 Ctrl+C，`config.toml` 按原样恢复。
+   - 恢复官方 Codex 配置：双击 `excel-codex-restore.command`，见[恢复官方 Codex 配置](#恢复官方-codex-配置)。
 
 第一次读取会话时，macOS 可能询问是否允许"终端"访问其他 App 的数据，选允许。
 想从源码运行就用 `./excel-codex.sh`（需要 Python 3.10+），桌面版模式是 `./excel-codex.sh desktop`。

@@ -424,6 +424,256 @@ class DesktopCommandTests(unittest.TestCase):
         self.assertEqual(self.config.read_text(), USER_CONFIG)
 
 
+class OfficialFileTests(unittest.TestCase):
+    """`excel-codex restore`: config.toml back on Codex's own setup."""
+
+    def setUp(self):
+        root = Path(tempfile.mkdtemp())
+        self.path = root / "config.toml"
+        patcher = mock.patch.dict(os.environ, {"EXCEL_BRIDGE_HOME": str(root / "bridge-home")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def restore(self, text: str | bytes) -> desktop_config.Restored:
+        if isinstance(text, str):
+            self.path.write_text(text)
+        else:
+            self.path.write_bytes(text)
+        return desktop_config.official_file(self.path)
+
+    def taken_out(self, *lines: str) -> str:
+        return "".join(desktop_config.RESTORE_PREFIX + line + "\n" for line in lines)
+
+    def test_what_a_closed_window_left_and_an_old_paste_both_come_out(self):
+        original = ("\ufeff" + USER_CONFIG.replace("\n", "\r\n")).encode("utf-8")
+        self.path.write_bytes(original)
+        desktop_config.enable_file(self.path, port=8765, catalog=CATALOG, model="gpt-6-sol-excel",
+                                   shared=True, quiet_features=True)
+        on_disk = self.path.read_bytes()
+        restored = desktop_config.official_file(self.path)
+        self.assertTrue(restored.blocks)
+        self.assertEqual(restored.took_out, ["[model_providers.excel-bridge] (the whole table)"])
+        self.assertEqual(restored.backup.read_bytes(), on_disk)
+        raw = self.path.read_bytes()
+        self.assertTrue(raw.startswith("\ufeff".encode("utf-8")))
+        text = raw.decode("utf-8-sig")
+        self.assertNotIn("\n", text.replace("\r\n", ""))
+        data = tomllib.loads(text)
+        self.assertEqual((data["model"], data["model_provider"]), ("gpt-5.5", "openai"))
+        self.assertNotIn("model_providers", data)
+        self.assertNotIn("features", data)
+        self.assertIn(desktop_config.RESTORE_PREFIX + "[model_providers.excel-bridge]\r\n", text)
+        # Only its lines: everything else is the user's, as it was.
+        self.assertEqual(text.replace(desktop_config.RESTORE_PREFIX, ""), USER_CONFIG.replace("\n", "\r\n"))
+
+    def test_a_hand_made_shared_setup(self):
+        catalog = Path(os.environ["EXCEL_BRIDGE_HOME"]) / codex_config.CATALOG_NAME
+        text = (
+            'model_provider = "openai"\n'
+            'openai_base_url = "http://127.0.0.1:8766/v1"\n'
+            f"model_catalog_json = '{catalog}'\n"
+            'model = "gpt-6-sol"\n'
+        )
+        restored = self.restore(text)
+        self.assertFalse(restored.blocks)
+        self.assertEqual(restored.took_out, ['openai_base_url = "http://127.0.0.1:8766/v1"',
+                                             f"model_catalog_json = '{catalog}'"])
+        self.assertEqual(restored.kept, [])
+        self.assertEqual(self.path.read_text(), (
+            'model_provider = "openai"\n'
+            + self.taken_out('openai_base_url = "http://127.0.0.1:8766/v1"', f"model_catalog_json = '{catalog}'")
+            + 'model = "gpt-6-sol"\n'
+        ))
+
+    def test_the_bridge_s_model_list_wherever_it_is(self):
+        for value in (r"C:\Users\someone\AppData\Local\excel-codex-bridge\codex-model-catalog.json",
+                      "/Users/someone/.excel-codex-bridge/codex-model-catalog.json"):
+            with self.subTest(value=value):
+                restored = self.restore(f"model_catalog_json = '{value}'\n")
+                self.assertEqual(restored.took_out, [f"model_catalog_json = '{value}'"])
+        restored = self.restore("model_catalog_json = '/home/someone/models.json'\n")
+        self.assertFalse(restored.changed)
+
+    def test_a_loopback_openai_base_url_on_its_own(self):
+        # Some other local proxy: left in, and said.
+        restored = self.restore('openai_base_url = "http://localhost:9000/v1"\n')
+        self.assertFalse(restored.changed)
+        self.assertEqual(restored.kept, ['openai_base_url = "http://localhost:9000/v1"'])
+        self.assertIsNone(restored.backup)
+        # The bridge's default address.
+        restored = self.restore('openai_base_url = "http://127.0.0.1:8765/v1/"\n')
+        self.assertEqual(restored.took_out, ['openai_base_url = "http://127.0.0.1:8765/v1/"'])
+
+    def test_a_relay_is_left_alone_and_its_login_not_shown(self):
+        text = 'model_provider = "OpenAI"\nopenai_base_url = "https://user:secret@relay.example/v1"\n'
+        restored = self.restore(text)
+        self.assertFalse(restored.changed)
+        self.assertEqual(restored.kept, ['model_provider = "OpenAI"', 'openai_base_url = "https://relay.example/v1"'])
+        self.assertEqual(self.path.read_text(), text)
+        self.assertFalse(self.path.with_name("config.toml" + desktop_config.RESTORE_BACKUP_SUFFIX).exists())
+
+    def test_profiles_and_dotted_keys(self):
+        text = (
+            'model_providers.excel-bridge.base_url = "http://127.0.0.1:8765/v1"\n'
+            'approval_policy = "never"\n'
+            "\n"
+            "[profiles.long]\n"
+            'model = "gpt-6-luna-1m-excel"\n'
+            'model_provider = "excel-bridge"\n'
+            'model_reasoning_effort = "high"\n'
+        )
+        restored = self.restore(text)
+        self.assertEqual(restored.took_out, ["model_providers.excel-bridge.base_url = ...",
+                                             'model = "gpt-6-luna-1m-excel"', 'model_provider = "excel-bridge"'])
+        data = tomllib.loads(self.path.read_text())
+        self.assertEqual(data, {"approval_policy": "never", "profiles": {"long": {"model_reasoning_effort": "high"}}})
+
+    def test_blank_lines_and_comments_in_its_table_stay(self):
+        text = '[model_providers.excel-bridge]\n# pasted\nbase_url = "x"\n\n[model_providers.excel-bridge.http_headers]\na = "b"\n'
+        restored = self.restore(text)
+        self.assertEqual(restored.took_out, ["[model_providers.excel-bridge] (the whole table)",
+                                             "[model_providers.excel-bridge.http_headers] (the whole table)"])
+        self.assertEqual(self.path.read_text(), (
+            self.taken_out("[model_providers.excel-bridge]") + "# pasted\n" + self.taken_out('base_url = "x"')
+            + "\n" + self.taken_out("[model_providers.excel-bridge.http_headers]", 'a = "b"')
+        ))
+
+    def test_what_it_cannot_take_out_is_left_and_said(self):
+        text = 'model_provider = "excel-bridge"\nmodel_providers = { excel-bridge = { base_url = "x" } }\n'
+        restored = self.restore(text)
+        self.assertFalse(restored.changed)
+        self.assertEqual(restored.stuck, ['model_provider = "excel-bridge"'])
+        self.assertEqual(self.path.read_text(), text)
+
+    def test_twice_is_once_and_the_backup_stays(self):
+        self.restore('model_provider = "excel-bridge"\n')
+        backup = self.path.with_name("config.toml" + desktop_config.RESTORE_BACKUP_SUFFIX)
+        once = self.path.read_text()
+        again = desktop_config.official_file(self.path)
+        self.assertFalse(again.changed)
+        self.assertEqual(self.path.read_text(), once)
+        self.assertEqual(backup.read_text(), 'model_provider = "excel-bridge"\n')
+
+    def test_nothing_to_do(self):
+        self.assertFalse(desktop_config.official_file(self.path).changed)
+        self.assertFalse(self.path.exists())
+        restored = self.restore(USER_CONFIG.split("[model_providers")[0])
+        self.assertEqual((restored.changed, restored.kept, restored.stuck), (False, [], []))
+
+    def test_desktop_later_leaves_what_it_took_out_alone(self):
+        self.restore(USER_CONFIG)
+        after = self.path.read_text()
+        desktop_config.enable_file(self.path, port=8765, catalog=CATALOG, model="gpt-6-sol-excel")
+        self.assertTrue(desktop_config.disable_file(self.path))
+        self.assertEqual(self.path.read_text(), after)
+
+
+class RestoreCommandTests(unittest.TestCase):
+    def setUp(self):
+        root = Path(tempfile.mkdtemp())
+        self.config = root / "codex-home" / "config.toml"
+        self.config.parent.mkdir()
+        env = {"CODEX_HOME": str(self.config.parent), "EXCEL_BRIDGE_HOME": str(root / "bridge-home")}
+        patcher = mock.patch.dict(os.environ, env)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        seen = mock.patch.object(codex_threads, "codex_seen", return_value=False)
+        self.codex_seen = seen.start()
+        self.addCleanup(seen.stop)
+
+    def run_restore(self) -> tuple[int, list[str]]:
+        with mock.patch.object(cli, "_print") as printed:
+            code = cli.main(["restore"])
+        return code, [call.args[0] for call in printed.call_args_list]
+
+    def test_after_a_window_that_did_not_put_the_config_back(self):
+        self.config.write_text(USER_CONFIG)
+        desktop_config.enable_file(self.config, port=8765, catalog=CATALOG, model="gpt-6-sol-excel")
+        self.codex_seen.return_value = True
+        code, said = self.run_restore()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.config.read_text().replace(desktop_config.RESTORE_PREFIX, ""), USER_CONFIG)
+        self.assertEqual(tomllib.loads(self.config.read_text())["model_provider"], "openai")
+        self.assertEqual(said[0], f"Codex is back on its own setup: {self.config}")
+        self.assertIn("    [model_providers.excel-bridge] (the whole table)", said)
+        self.assertIn(f"  The file as it was is saved as config.toml{desktop_config.RESTORE_BACKUP_SUFFIX}.", said)
+        self.assertEqual(said[-2:], [cli._REOPEN_AFTER_RESTORE, cli._STILL_RUNNING])
+
+    def test_nothing_to_do(self):
+        code, said = self.run_restore()
+        self.assertEqual(code, 0)
+        self.assertEqual(said, [f"Nothing of the bridge's in {self.config}; Codex is on its own setup there."])
+        self.assertFalse(self.config.exists())
+
+    def test_a_relay_is_said(self):
+        self.config.write_text('openai_base_url = "https://relay.example/v1"\n')
+        code, said = self.run_restore()
+        self.assertEqual(code, 0)
+        self.assertEqual(said[0], f"Nothing of the bridge's in {self.config}.")
+        self.assertEqual(said[-1], '    openai_base_url = "https://relay.example/v1"')
+
+    def test_what_it_cannot_take_out_fails(self):
+        self.config.write_text('model_provider = "excel-bridge"\nmodel_providers = { excel-bridge = {} }\n')
+        code, said = self.run_restore()
+        self.assertEqual(code, 1)
+        self.assertEqual(said[0], f"The bridge is still set up in {self.config}:")
+        self.assertIn('    model_provider = "excel-bridge"', said)
+        self.assertNotIn(cli._REOPEN_AFTER_RESTORE, said)
+
+    def test_signed_in_codex_gets_the_bridge_s_conversations(self):
+        (self.config.parent / "auth.json").write_text('{"auth_mode": "apikey", "OPENAI_API_KEY": "sk-test"}')
+        with mock.patch.object(cli, "_move_bridge_threads") as move:
+            self.run_restore()
+        move.assert_called_once_with(self.config.parent)
+
+    def test_without_a_sign_in_it_says_how(self):
+        with mock.patch.object(codex_threads, "bridge_threads", return_value=[object(), object()]), \
+                mock.patch.object(cli, "_move_bridge_threads", side_effect=AssertionError):
+            code, said = self.run_restore()
+        self.assertEqual(code, 0)
+        self.assertTrue(any(line.startswith("  2 conversation(s) are filed under the bridge's own provider")
+                            and "`excel-codex threads migrate`" in line for line in said))
+
+    def test_the_windows_timezone_goes_back(self):
+        from excel_codex_bridge import system_timezone
+
+        cases = ((lambda: "China Standard Time", "  Windows timezone: put back China Standard Time."),
+                 (lambda: None, None))
+        for restore, line in cases:
+            with self.subTest(line=line), mock.patch.object(cli.sys, "platform", "win32"), \
+                    mock.patch.object(system_timezone, "restore", restore):
+                code, said = self.run_restore()
+            self.assertEqual(code, 0)
+            self.assertEqual([s for s in said if "timezone" in s], [line] if line else [])
+
+        def refused():
+            raise system_timezone.Refused("tzutil failed")
+
+        with mock.patch.object(cli.sys, "platform", "win32"), mock.patch.object(system_timezone, "restore", refused):
+            code, said = self.run_restore()
+        self.assertEqual(code, 0)
+        self.assertTrue(any("tzutil failed" in s and "excel-codex timezone restore" in s for s in said))
+
+    def test_what_it_says_is_ascii(self):
+        self.config.write_text(
+            'model_provider = "excel-bridge"\nopenai_base_url = "http://127.0.0.1:8765/v1"\n'
+            'model_providers.excel-bridge.name = "x"\n'
+        )
+        with mock.patch.object(codex_threads, "bridge_threads", return_value=[object()]):
+            _, said = self.run_restore()
+        for line in said:
+            line.replace(str(self.config), "").encode("ascii")
+
+    def test_double_click_launchers(self):
+        repo = Path(__file__).resolve().parents[1]
+        command = repo / "excel-codex-restore.command"
+        self.assertTrue(os.access(command, os.X_OK) or sys.platform == "win32")
+        text = command.read_text(encoding="ascii")
+        self.assertIn('exec "$here/excel-codex" restore "$@"', text)
+        self.assertIn('exec "$here/excel-codex.sh" restore "$@"', text)
+        self.assertNotIn("\r", text)
+
+
 # Loses track of the first connection the way asyncio's Windows proactor does when a
 # client resets it, then runs the CLI.
 LEAKY_DESKTOP = """\

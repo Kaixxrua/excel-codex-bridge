@@ -737,6 +737,79 @@ def _say_if_codex_runs(message: str = _STILL_RUNNING) -> None:
         _print(message)
 
 
+# ─── restore: back to Codex's own setup ───────────────────────────────────────
+
+def cmd_restore(args) -> int:
+    """Codex as it was before the bridge: config.toml, the bridge's own conversations, the Windows timezone."""
+    config = desktop_config.config_path()
+    try:
+        restored = desktop_config.official_file(config)
+    except (OSError, UnicodeError) as exc:
+        _print(f"Could not update {config}: {exc}")
+        return 1
+    if restored.changed:
+        _print(f"Codex is back on its own setup: {config}")
+    elif restored.stuck:
+        _print(f"The bridge is still set up in {config}:")
+    elif restored.kept:
+        _print(f"Nothing of the bridge's in {config}.")
+    else:
+        _print(f"Nothing of the bridge's in {config}; Codex is on its own setup there.")
+    if restored.blocks:
+        _print("  Took out what `excel-codex desktop` had put in, and put back the lines it had set aside.")
+    if restored.took_out:
+        _print("  Commented out the bridge's settings put in some other way (such as a pasted `print-config`):")
+        for line in restored.took_out:
+            _print(f"    {line}")
+        if restored.backup:
+            _print(f"  The file as it was is saved as {restored.backup.name}.")
+    if restored.stuck:
+        _print("  These are the bridge's, but commenting them out would break the file; delete them by hand:")
+        for line in restored.stuck:
+            _print(f"    {line}")
+    if restored.kept:
+        _print("  Left as they are: not the bridge's (a relay's?), though Codex's own setup has none of them:")
+        for line in restored.kept:
+            _print(f"    {line}")
+    _restore_conversations(desktop_config.codex_home())
+    _restore_windows_timezone()
+    if restored.changed:
+        _print(_REOPEN_AFTER_RESTORE)
+        _say_if_codex_runs()
+    return 1 if restored.stuck else 0
+
+
+def _restore_conversations(home: Path) -> None:
+    """The bridge's own conversations open only through it: into Codex's own list, where it can."""
+    from . import codex_threads
+
+    if codex_config.codex_signed_in(home):
+        _move_bridge_threads(home)
+        return
+    try:
+        count = len(codex_threads.bridge_threads(home, codex_config.state_dir()))
+    except (codex_threads.Refused, OSError, sqlite3.Error):
+        return
+    if count:
+        _print(f"  {count} conversation(s) are filed under the bridge's own provider, which Codex cannot open\n"
+               "  without it. Once Codex is signed in (`codex login`) and fully quit, `excel-codex threads migrate`\n"
+               "  moves them into its own list.")
+
+
+def _restore_windows_timezone() -> None:
+    if sys.platform != "win32":
+        return
+    from . import system_timezone
+
+    try:
+        original = system_timezone.restore()
+    except system_timezone.Refused as exc:
+        _print(f"  Windows timezone: could not put it back ({exc}).\n  -> Run `excel-codex timezone restore`.")
+        return
+    if original:
+        _print(f"  Windows timezone: put back {original}.")
+
+
 # ─── timezone ─────────────────────────────────────────────────────────────────
 
 def _redacted(url: str | None) -> str:
@@ -1127,6 +1200,11 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--log-file", help=argparse.SUPPRESS)
     serve.add_argument("--exit-with-stdin", action="store_true", help=argparse.SUPPRESS)
 
+    sub.add_parser(
+        "restore",
+        help="put Codex back on its own setup: the bridge's settings out of config.toml (also ones pasted in "
+        "by hand), its own conversations into Codex's list, the Windows timezone back",
+    )
     sub.add_parser("status", parents=[common], help="show which ChatGPT sign-in the bridge would use")
 
     login = sub.add_parser(
@@ -1200,8 +1278,8 @@ def _main(argv: list[str]) -> int:
     if argv and argv[0] == "sub2api":
         from .sub2api_cli import main as sub2api_main
         return sub2api_main(argv[1:])
-    known = {"codex", "desktop", "serve", "status", "login", "print-config", "timezone", "threads", "update",
-             "-h", "--help", "--version"}
+    known = {"codex", "desktop", "restore", "serve", "status", "login", "print-config", "timezone", "threads",
+             "update", "-h", "--help", "--version"}
     if not argv or argv[0] not in known:
         argv = ["codex", *argv]
     codex_args: list[str] = []
@@ -1217,6 +1295,8 @@ def _main(argv: list[str]) -> int:
         return cmd_login(args)
     if args.command == "desktop":
         return cmd_desktop(args)
+    if args.command == "restore":
+        return cmd_restore(args)
     if args.command == "print-config":
         return cmd_print_config(args)
     if args.command == "timezone":

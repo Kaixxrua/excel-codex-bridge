@@ -27,6 +27,7 @@ PROVIDER_ID = "excel-bridge"
 PROVIDER_NAME = "Excel Bridge"
 OPENAI_PROVIDER_ID = "openai"
 DEFAULT_PORT = 8765
+CATALOG_NAME = "codex-model-catalog.json"
 # Codex offers its image tool (image_gen.imagegen) to a provider of its own only
 # when the provider sets this header; the bridge answers the tool with the
 # add-in's image endpoints and ignores the value.
@@ -161,7 +162,7 @@ def catalog_payload() -> dict[str, object]:
 def write_catalog(directory: Path | None = None) -> Path:
     directory = directory or state_dir()
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / "codex-model-catalog.json"
+    path = directory / CATALOG_NAME
     content = json.dumps(catalog_payload(), indent=2, ensure_ascii=False) + "\n"
     fd, tmp = tempfile.mkstemp(dir=directory, prefix=".catalog-", suffix=".tmp")
     try:

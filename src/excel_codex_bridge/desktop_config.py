@@ -11,17 +11,23 @@ It also turns off two Codex features that wait on chatgpt.com when signed in
 with ChatGPT: apps (up to 30 s when a session starts) and remote plugin
 suggestions (5 s on every turn, since failures are not remembered).  Through a
 proxy node that is down, the desktop app sits on "loading" meanwhile.
+
+``official_file`` (``excel-codex restore``) goes further: besides the marked
+blocks it comments out the bridge's settings put in some other way, such as a
+``print-config`` snippet pasted in by hand, so Codex is back on its own setup.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import codex_config
+from . import codex_config, excel_upstream
 
 TOP_START = "# >>> excel-codex-bridge: added by `excel-codex desktop`; `excel-codex desktop --off` removes it"
 TOP_END = "# <<< excel-codex-bridge"
@@ -48,6 +54,17 @@ _ROOT_FEATURE_KEYS = re.compile(rf"""\s*(["']?)features\1\s*\.\s*(["']?)({'|'.jo
 # `features = { ... }` cannot be added to; the features are left alone then.
 _INLINE_FEATURES = re.compile(r"""\s*(["']?)features\1\s*=""")
 _BOM = "﻿"
+# Put before each line `official_file` takes out; nothing puts them back by itself.
+RESTORE_PREFIX = "# excel-codex restore took out: "
+RESTORE_BACKUP_SUFFIX = ".before-excel-codex-restore"
+_PROFILE_TABLE = re.compile(r"""\s*\[\s*(["']?)profiles\1\s*\.""")
+_OWN_DOTTED = re.compile(
+    rf"""\s*(["']?)model_providers\1\s*\.\s*(["']?){re.escape(codex_config.PROVIDER_ID)}\2\s*\."""
+)
+_ROUTE_KEY = re.compile(r"""\s*(["']?)(model_provider|model|model_catalog_json|openai_base_url)\1\s*=""")
+_STRING_VALUE = re.compile(r"""=\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')\s*(?:#.*)?$""")
+_LOOPBACK_URL = re.compile(r"https?://(127\.\d+\.\d+\.\d+|localhost|\[::1\])(:\d+)?(/|$)", re.IGNORECASE)
+_BRIDGE_DIRS = {"excel-codex-bridge", ".excel-codex-bridge"}
 
 
 def codex_home() -> Path:
@@ -300,3 +317,174 @@ def disable_file(path: Path) -> bool:
         return False
     _write(path, strip_managed(text), bom)
     return True
+
+
+# ─── back to Codex's own setup ────────────────────────────────────────────────
+
+@dataclass
+class Restored:
+    """What ``official_file`` did to a config."""
+
+    # `excel-codex desktop`'s marked blocks came out, and the lines it had set aside went back.
+    blocks: bool = False
+    # The bridge's settings put in some other way, now commented out (as shown to the user).
+    took_out: list[str] = field(default_factory=list)
+    # The file as it was, saved before ``took_out``.
+    backup: Path | None = None
+    # The bridge's settings that could not be commented out without breaking the file.
+    stuck: list[str] = field(default_factory=list)
+    # Settings that are not the bridge's but still keep Codex off its own setup, such as a relay's.
+    kept: list[str] = field(default_factory=list)
+
+    @property
+    def changed(self) -> bool:
+        return self.blocks or bool(self.took_out)
+
+
+def _string_value(line: str) -> str | None:
+    """The string a one-line ``key = "value"`` sets, else None."""
+    match = _STRING_VALUE.search(_bare(line))
+    if match is None:
+        return None
+    if match.group(2) is not None:
+        return match.group(2)
+    try:
+        return json.loads(f'"{match.group(1)}"')
+    except ValueError:
+        return match.group(1)
+
+
+def _without_login(url: str) -> str:
+    scheme, _, rest = url.partition("://")
+    return f"{scheme}://{rest.rpartition('@')[2]}" if rest else url
+
+
+def _bridge_catalog(value: str) -> bool:
+    """Whether ``value`` is the model list the bridge writes (``codex_config.write_catalog``)."""
+    parts = [part for part in re.split(r"[\\/]+", value.strip()) if part]
+    if len(parts) >= 2 and parts[-1] == codex_config.CATALOG_NAME and parts[-2].lower() in _BRIDGE_DIRS:
+        return True
+    own = codex_config.state_dir() / codex_config.CATALOG_NAME
+    return os.path.normcase(os.path.abspath(os.path.expanduser(value))) == os.path.normcase(os.path.abspath(own))
+
+
+def _leftovers(text: str) -> tuple[list[int], set[int], list[str]]:
+    """The bridge's lines in ``text`` (indexes; those in its provider's tables again on their own),
+    and settings of others that keep Codex off its own setup.
+
+    The bridge's: at the top level or in a profile, ``model_provider =
+    "excel-bridge"``, one of its model names (``gpt-6-sol-excel``) and its model
+    list; the ``excel-bridge`` provider's tables and dotted keys; and a
+    loopback ``openai_base_url`` when any of those is there too, or when it is
+    the bridge's default address.
+    """
+    lines = text.splitlines(keepends=True)
+    ours: list[int] = []
+    tables: set[int] = set()
+    loopback: list[int] = []
+    kept: list[str] = []
+    where = "top"
+    for index, line in enumerate(lines):
+        if _TABLE_HEADER.match(line):
+            where = "own" if _OWN_TABLE.match(line) else "profile" if _PROFILE_TABLE.match(line) else "other"
+        if where == "own":
+            if line.strip() and not line.lstrip().startswith("#"):
+                ours.append(index)
+                tables.add(index)
+            continue
+        if where == "other" or line.lstrip().startswith("#"):
+            continue
+        if where == "top" and _OWN_DOTTED.match(line):
+            ours.append(index)
+            continue
+        key = _ROUTE_KEY.match(line)
+        value = _string_value(line) if key else None
+        if value is None:
+            continue
+        name = key.group(2)
+        if name == "model_provider":
+            if value == codex_config.PROVIDER_ID:
+                ours.append(index)
+            elif value != codex_config.OPENAI_PROVIDER_ID:
+                kept.append(f"model_provider = {json.dumps(value)}")
+        elif name == "model":
+            if excel_upstream.excel_model_id(value):
+                ours.append(index)
+        elif name == "model_catalog_json":
+            if _bridge_catalog(value):
+                ours.append(index)
+        elif where == "top":  # openai_base_url; profiles have none
+            if _LOOPBACK_URL.match(value.strip()):
+                loopback.append(index)
+            else:
+                kept.append(f"openai_base_url = {json.dumps(_without_login(value))}")
+    default = codex_config.base_url(codex_config.DEFAULT_PORT)
+    for index in loopback:
+        value = _string_value(lines[index]) or ""
+        if ours or value.strip().rstrip("/") == default:
+            ours.append(index)
+        else:
+            kept.append(f"openai_base_url = {json.dumps(_without_login(value))}")
+    return sorted(ours), tables, kept
+
+
+def _shown(lines: list[str], indexes: list[int], tables: set[int]) -> list[str]:
+    """``indexes`` of ``lines`` as told to the user: a table by its header, URLs without a login."""
+    shown: list[str] = []
+    for index in indexes:
+        line = _bare(lines[index]).strip()
+        key = _ROUTE_KEY.match(line)
+        value = _string_value(line)
+        if index in tables:
+            if _TABLE_HEADER.match(line):
+                shown.append(f"{line} (the whole table)")
+        elif key and key.group(2) == "openai_base_url" and value is not None:
+            shown.append(f"openai_base_url = {json.dumps(_without_login(value))}")
+        elif _OWN_DOTTED.match(line):
+            shown.append(f"{line.partition('=')[0].strip()} = ...")
+        else:
+            shown.append(line)
+    return shown
+
+
+def _official(text: str) -> bool:
+    """Whether ``text`` is valid TOML that no longer sets the bridge up (True without tomllib)."""
+    try:
+        data = _parse(text)
+    except ValueError:
+        return False
+    if data is None:
+        return True
+    providers = data.get("model_providers")
+    return data.get("model_provider") != codex_config.PROVIDER_ID and not (
+        isinstance(providers, dict) and codex_config.PROVIDER_ID in providers
+    )
+
+
+def official_file(path: Path) -> Restored:
+    """Put ``path`` back on Codex's own setup (``excel-codex restore``).
+
+    First what ``disable_file`` undoes, exactly; then the bridge's settings put
+    in some other way are commented out with ``RESTORE_PREFIX``, once the file
+    as it was is saved next to it.  Should commenting them out leave invalid
+    TOML, or the bridge still set up, they are left as they are, in ``stuck``.
+    """
+    text, bom = _read(path)
+    restored = Restored(blocks=is_enabled(text) or DISABLED_PREFIX in text or FEATURES_START in text)
+    base = strip_managed(text) if restored.blocks else text
+    ours, tables, restored.kept = _leftovers(base)
+    new = base
+    if ours:
+        lines = base.splitlines(keepends=True)
+        chosen = set(ours)
+        candidate = "".join(RESTORE_PREFIX + line if i in chosen else line for i, line in enumerate(lines))
+        if _official(candidate):
+            new, restored.took_out = candidate, _shown(lines, ours, tables)
+        else:
+            restored.stuck = _shown(lines, ours, tables)
+    if restored.took_out and path.exists():
+        restored.backup = path.with_name(path.name + RESTORE_BACKUP_SUFFIX)
+        shutil.copy2(path, restored.backup)
+    if new != text:
+        _write(path, new, bom)
+    return restored

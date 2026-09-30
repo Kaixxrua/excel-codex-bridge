@@ -143,6 +143,7 @@ excel-codex status                            which sign-in is used, is it usabl
 excel-codex --login codex                      use Codex's own sign-in only (never touch Excel)
 excel-codex login                             open Excel's ChatGPT pane to sign in or refresh
 excel-codex desktop                           route the Codex desktop app / IDE extension here
+excel-codex restore                           put Codex back on its own setup (all the bridge's settings out)
 excel-codex threads migrate                   move the bridge's own conversations into the shared list (done at start too)
 excel-codex threads migrate --from OpenAI     move a relay provider's (OpenAI) conversations under openai
 ```
@@ -243,7 +244,8 @@ Details:
 - `config.toml` is shared by every Codex client, so plain `codex` in a terminal also uses the
   bridge while the window is open.
 - To keep it on: `excel-codex desktop --keep-config`, and later `excel-codex desktop --off`
-  (also the fix if the window was killed before it could restore the config).
+  (also the fix if the window was killed before it could restore the config; so is double-clicking
+  `excel-codex-restore.cmd`, see [Back to Codex's own setup](#back-to-codexs-own-setup)).
 - Other model: `excel-codex desktop --model gpt-5.6-terra`; other port: `--port`.
 - While the window is open, Codex's apps and plugin suggestions (`features.apps`,
   `features.remote_plugin`) are off; they come back with the config. Signed in with ChatGPT, Codex
@@ -331,6 +333,31 @@ desktop app reads the model list only when it starts. Common causes:
 Fully manual alternative: run `excel-codex serve` and add the output of `excel-codex print-config`
 to `config.toml`; remove those lines to go back. Each time `serve` starts it brings the model list
 file those lines point at up to date with its release (0.5.15 and later).
+
+### Back to Codex's own setup
+
+To stop using the bridge and put Codex back on its official route, double-click
+**`excel-codex-restore.cmd`** from the release zip (macOS: `excel-codex-restore.command`; Linux or
+from source: `./excel-codex-restore.command`, or `excel-codex restore`). It goes online for nothing
+and starts no bridge; it does the following, then ends (0.5.19 and later):
+
+- Takes out what `excel-codex desktop` wrote into `config.toml` and puts the lines it had set aside
+  back byte for byte (as `desktop --off` does).
+- Comments out the bridge's settings put in some other way (such as a pasted `print-config`
+  snippet) too: `model_provider = "excel-bridge"`, the whole `[model_providers.excel-bridge]` table,
+  `-excel` model names, the bridge's model list (`model_catalog_json`), and an `openai_base_url`
+  pointing at a local bridge (when the same file has one of those too, or it is the bridge's default
+  address `http://127.0.0.1:8765/v1`). The file as it was is saved as
+  `config.toml.before-excel-codex-restore` first; those lines start with
+  `# excel-codex restore took out: `, and deleting that prefix brings one back.
+- If Codex is signed in, moves the bridge's own conversations into Codex's list (as `threads migrate`
+  does; Codex has to be fully quit).
+- On Windows, puts back the system timezone from before the bridge first changed it (as
+  `timezone restore` does).
+
+Settings that are not the bridge's (a relay's `openai_base_url`, a custom `model_provider`) stay as
+they are; the window lists them. Afterwards fully quit and reopen the Codex desktop app (reload IDE
+windows) so it connects the official way.
 
 ## Session sharing
 
@@ -502,6 +529,8 @@ Notes:
    - Codex desktop app: double-click `excel-codex-desktop.command`, then quit the desktop app with
      `Cmd+Q` and open it again. Keep the Terminal window open; closing it or pressing Ctrl+C restores
      `config.toml` exactly.
+   - Back to Codex's own setup: double-click `excel-codex-restore.command`, see
+     [Back to Codex's own setup](#back-to-codexs-own-setup).
 
 The first time the session is read, macOS may ask whether Terminal may access data from other apps;
 allow it. To run from source instead, use `./excel-codex.sh` (Python 3.10+), and
