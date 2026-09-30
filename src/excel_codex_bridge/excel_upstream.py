@@ -98,6 +98,19 @@ CLIENT_TOOL_TRANSPORT_NAME = "run_officejs"
 CLIENT_TOOL_TRANSPORT_ALIASES = frozenset(
     {CLIENT_TOOL_TRANSPORT_NAME, f"functions.{CLIENT_TOOL_TRANSPORT_NAME}"}
 )
+# Codex's tool discovery: with it, app and MCP tools stay out of the request
+# until a search loads them (the catalog marks the models as supporting it).
+TOOL_SEARCH = "tool_search"
+TOOL_SEARCH_CALL = "tool_search_call"
+TOOL_SEARCH_OUTPUT = "tool_search_output"
+# The catalog quotes these namespaces in full; any other (the desktop app's
+# tools, an MCP server's) as a one-sentence summary with each parameter's type,
+# and a call that misses its parameters gets the full definition back.
+FULL_NAMESPACES = frozenset({"collaboration", "image_gen", "web"})
+SUMMARY_DESCRIPTION_CHARS = 160
+SUMMARY_PARAMETER_CHARS = 60
+# tool_search's description quotes what each source (app, MCP server) says of itself.
+SEARCH_SOURCE_CHARS = 240
 TOOLS_VERSION_METADATA_KEY = "bps_tools_version_id"
 _TOOLS_VERSION_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
 _NATIVE_CALL_CACHE_LIMIT = 512
@@ -303,6 +316,9 @@ def _iter_client_tools(tools: object, namespace: str | None = None):
             continue
         tool_type = str(tool.get("type") or "").strip().lower()
         name = tool.get("name")
+        if tool_type == TOOL_SEARCH and namespace is None and tool.get("execution", "client") == "client":
+            yield TOOL_SEARCH, TOOL_SEARCH, None, TOOL_SEARCH, tool
+            continue
         if tool_type in {"function", "custom"} and isinstance(name, str):
             normalized_name = name.strip()
             if normalized_name:
@@ -317,13 +333,42 @@ def _iter_client_tools(tools: object, namespace: str | None = None):
             yield from _iter_client_tools(tool.get("tools"), name.strip())
 
 
+def _loaded_tools(raw_input: object) -> list:
+    """The tools Codex's tool_search has loaded so far, from its results in the conversation.
+
+    Codex keeps what it defers (app and MCP tools) out of ``tools`` and hands
+    the model only ``tool_search``; the tools a search found come back in its
+    result and stay callable from then on, though ``tools`` never lists them.
+    """
+    if not isinstance(raw_input, list):
+        return []
+    return [
+        tool
+        for item in raw_input
+        if isinstance(item, dict) and item.get("type") == TOOL_SEARCH_OUTPUT
+        for tool in (item.get("tools") if isinstance(item.get("tools"), list) else [])
+        if isinstance(tool, dict)
+    ]
+
+
+def _callable_tools(source: dict) -> list:
+    declared = source.get("tools") if isinstance(source.get("tools"), list) else []
+    return [*declared, *_loaded_tools(source.get("input"))]
+
+
+def declared_tool_types(source: dict) -> dict[str, str]:
+    """The tools the request declares: what the catalog at the top of the prompt lists."""
+    if str(source.get("tool_choice") or "").strip().lower() == "none":
+        return {}
+    return {key: tool_type for key, _name, _namespace, tool_type, _tool in _iter_client_tools(source.get("tools"))}
+
+
 def client_tool_types(source: dict) -> dict[str, str]:
+    """Every tool the model may call: those declared, and those tool_search loaded."""
     if str(source.get("tool_choice") or "").strip().lower() == "none":
         return {}
     result: dict[str, str] = {}
-    for key, _name, _namespace, tool_type, _tool in _iter_client_tools(
-        source.get("tools")
-    ):
+    for key, _name, _namespace, tool_type, _tool in _iter_client_tools(_callable_tools(source)):
         result[key] = tool_type
     return result
 
@@ -528,9 +573,7 @@ def _remembered_native_call(call_id: object) -> dict | None:
 
 def _client_tool_specs(source: dict) -> dict[str, dict]:
     result: dict[str, dict] = {}
-    for key, name, namespace, tool_type, tool in _iter_client_tools(
-        source.get("tools")
-    ):
+    for key, name, namespace, tool_type, tool in _iter_client_tools(_callable_tools(source)):
         result[key] = {
             "key": key,
             "name": name,
@@ -851,6 +894,28 @@ def extract_native_client_tool_call(
     return calls[0] if calls else None
 
 
+def _tool_search_arguments(arguments: dict) -> dict | None:
+    """tool_search's arguments as Codex reads them: a query, and a whole positive limit if any."""
+    query = arguments.get("query")
+    if not isinstance(query, str) or not query.strip():
+        return None
+    search: dict[str, object] = {"query": query}
+    limit = arguments.get("limit")
+    if isinstance(limit, (int, float)) and not isinstance(limit, bool) and limit >= 1 and limit == int(limit):
+        search["limit"] = int(limit)
+    return search
+
+
+def _tool_search_call(call_id: str, search: dict) -> dict:
+    return {
+        "type": TOOL_SEARCH_CALL,
+        "id": f"tsc_{call_id}",
+        "call_id": call_id,
+        "execution": "client",
+        "arguments": search,
+    }
+
+
 def _client_call_from_native(
     native: dict,
     specs: dict[str, dict],
@@ -869,7 +934,7 @@ def _client_call_from_native(
     tool_info = specs[name]
     spec = tool_info["spec"]
     expected_type = tool_info["type"]
-    if expected_type == "function":
+    if expected_type in {"function", TOOL_SEARCH}:
         if envelope is not None:
             arguments = envelope.get("arguments")
             if isinstance(arguments, str):
@@ -905,6 +970,12 @@ def _client_call_from_native(
             else f"{NATIVE_FALLBACK_CALL_ID_PREFIX}{uuid4().hex}"
         )
         native_item_id = native.get("id")
+        if expected_type == TOOL_SEARCH:
+            search = _tool_search_arguments(arguments)
+            if search is None:
+                return None
+            _remember_native_call(native)
+            return _tool_search_call(call_id, search)
         _remember_native_call(native)
         result = {
             "type": "function_call",
@@ -961,43 +1032,152 @@ def _client_call_from_native(
     return None
 
 
-def _client_tool_protocol_instructions(source: dict) -> str:
-    allowed_tools = client_tool_types(source)
-    if not allowed_tools:
-        return EXTERNAL_CLIENT_INSTRUCTIONS
+def _parameters(tool: dict) -> dict:
+    parameters = tool.get("parameters") or tool.get("inputSchema") or tool.get("input_schema")
+    return parameters if isinstance(parameters, dict) else {}
 
-    tool_catalog: list[dict[str, object]] = []
-    for key, name, namespace, tool_type, tool in _iter_client_tools(
-        source.get("tools")
-    ):
-        entry: dict[str, object] = {
-            "type": tool_type,
-            "name": key,
-        }
-        if namespace:
-            entry["namespace"] = namespace
-            entry["tool"] = name
-        description = tool.get("description")
-        if isinstance(description, str) and description:
-            entry["description"] = description
-        if tool_type == "function":
-            parameters = (
-                tool.get("parameters")
-                or tool.get("inputSchema")
-                or tool.get("input_schema")
-            )
-            entry["parameters"] = parameters if isinstance(parameters, dict) else {}
+
+def _compact_schema(schema: object) -> object:
+    """``schema`` without what only tells a validator something (the bridge checks calls against the original)."""
+    if isinstance(schema, list):
+        return [_compact_schema(value) for value in schema]
+    if not isinstance(schema, dict):
+        return schema
+    compact: dict[str, object] = {}
+    for key, value in schema.items():
+        if key in {"title", "$schema"} or (key == "additionalProperties" and value is False):
+            continue
+        if key in {"properties", "patternProperties", "$defs", "definitions"} and isinstance(value, dict):
+            # Names, not keywords: a parameter may well be called title.
+            compact[key] = {name: _compact_schema(nested) for name, nested in value.items()}
+        elif key in {"enum", "const", "default", "examples"}:
+            compact[key] = value
         else:
-            custom_format = tool.get("format")
-            if isinstance(custom_format, dict):
-                entry["format"] = custom_format
-        tool_catalog.append(entry)
+            compact[key] = _compact_schema(value)
+    return compact
 
-    catalog_json = json.dumps(
-        tool_catalog,
+
+_SENTENCE_END = re.compile(r"[.!?](?=\s+[^a-z\s]|\s*$)|[\u3002\uff01\uff1f]")
+
+
+def _leading_sentences(text: object, limit: int) -> str:
+    """The whole sentences ``text`` starts with that fit in ``limit`` characters; at least the first, cut to fit."""
+    text = " ".join(text.split()) if isinstance(text, str) else ""
+    if len(text) <= limit:
+        return text
+    kept = ""
+    for match in _SENTENCE_END.finditer(text):
+        if match.end() > limit:
+            break
+        kept = text[: match.end()]
+    return kept or text[: limit - 3].rstrip() + "..."
+
+
+def _type_summary(schema: object) -> str:
+    """A short type for ``schema``: string, number[], "a"|"b", {name: string; size?: number}."""
+    if not isinstance(schema, dict):
+        return "any"
+    if isinstance(schema.get("enum"), list):
+        return "|".join(json.dumps(value, ensure_ascii=False) for value in schema["enum"])
+    if "const" in schema:
+        return json.dumps(schema["const"], ensure_ascii=False)
+    variants = schema.get("anyOf") or schema.get("oneOf")
+    if isinstance(variants, list) and variants:
+        return "|".join(_type_summary(variant) for variant in variants)
+    kind = schema.get("type")
+    if kind == "array":
+        return _type_summary(schema.get("items")) + "[]"
+    if kind == "object" and isinstance(schema.get("properties"), dict):
+        required = schema.get("required") if isinstance(schema.get("required"), list) else []
+        return "{" + "; ".join(
+            f"{name}{'' if name in required else '?'}: {_type_summary(nested)}"
+            for name, nested in schema["properties"].items()
+        ) + "}"
+    if isinstance(kind, list):
+        return "|".join(str(item) for item in kind)
+    return str(kind) if kind else "any"
+
+
+def _parameter_summary(schema: dict) -> dict[str, str]:
+    """Each parameter as "type, required: what it is" (the start of its description)."""
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return {}
+    required = schema.get("required") if isinstance(schema.get("required"), list) else []
+    summary = {}
+    for name, nested in properties.items():
+        text = _type_summary(nested) + (", required" if name in required else "")
+        described = _leading_sentences(nested.get("description") if isinstance(nested, dict) else None,
+                                    SUMMARY_PARAMETER_CHARS)
+        summary[name] = f"{text}: {described}" if described else text
+    return summary
+
+
+def _search_description(description: str) -> str:
+    """tool_search's description with the start of what it says for each source (it quotes each in full)."""
+    return "\n".join(
+        f"- {_leading_sentences(line[2:], SEARCH_SOURCE_CHARS)}" if line.startswith("- ") else line
+        for line in description.splitlines()
+    )
+
+
+def _summarized(namespace: str | None) -> bool:
+    return namespace is not None and namespace not in FULL_NAMESPACES
+
+
+def _catalog_entry(key: str, namespace: str | None, tool_type: str, tool: dict, *, full: bool = False) -> dict:
+    """How the catalog shows one tool; a summary for a namespace of the desktop app's or an MCP server's."""
+    entry: dict[str, object] = {"type": "function" if tool_type == TOOL_SEARCH else tool_type, "name": key}
+    description = tool.get("description")
+    if not full and _summarized(namespace) and tool_type == "function":
+        entry["summary"] = _leading_sentences(description, SUMMARY_DESCRIPTION_CHARS)
+        entry["parameters"] = _parameter_summary(_parameters(tool))
+        return entry
+    if isinstance(description, str) and description:
+        entry["description"] = _search_description(description) if tool_type == TOOL_SEARCH else description
+    if tool_type in {"function", TOOL_SEARCH}:
+        entry["parameters"] = _compact_schema(_parameters(tool))
+    elif isinstance(tool.get("format"), dict):
+        entry["format"] = tool["format"]
+    return entry
+
+
+def _catalog_json(tools: object, *, full: bool = False) -> str:
+    return json.dumps(
+        [
+            _catalog_entry(key, namespace, tool_type, tool, full=full)
+            for key, _name, namespace, tool_type, tool in _iter_client_tools(tools)
+        ],
         separators=(",", ":"),
         ensure_ascii=False,
     )
+
+
+def _catalog_notes(source: dict) -> str:
+    """How to read the summarized entries and tool_search's results, when the catalog has them."""
+    tools = list(_iter_client_tools(source.get("tools")))
+    notes = ""
+    if any(_summarized(namespace) and tool_type == "function" for _key, _name, namespace, tool_type, _tool in tools):
+        notes += (
+            "An entry with summary instead of description gives each parameter as "
+            '"type[, required]: meaning" (a trailing ? marks an optional field); a call that does not '
+            "match the tool comes back with its full definition. "
+        )
+    if any(tool_type == TOOL_SEARCH for _key, _name, _namespace, tool_type, _tool in tools):
+        notes += (
+            "tool_search loads more tools (such as app and MCP tools) that this catalog leaves out; "
+            "its result defines the tools it loaded, and you call them through run_officejs like "
+            "catalog tools, by the full name it gives. "
+        )
+    return notes
+
+
+def _client_tool_protocol_instructions(source: dict) -> str:
+    allowed_tools = declared_tool_types(source)
+    if not allowed_tools:
+        return EXTERNAL_CLIENT_INSTRUCTIONS
+
+    catalog_json = _catalog_json(source.get("tools"))
     if parallel_tool_calls_allowed(source):
         closing = (
             "\nRemember: each outer native run_officejs call carries exactly one "
@@ -1062,7 +1242,9 @@ def _client_tool_protocol_instructions(source: dict) -> str:
         + no_javascript
         + "Serialize the complete inner object before placing it there, especially when "
         "shell commands contain backslashes or quotes. TOOL_NAME and its payload must follow the "
-        "catalog exactly. The proxy converts this native function call into the "
+        "catalog exactly, with only the parameters the tool defines. "
+        + _catalog_notes(source)
+        + "The proxy converts this native function call into the "
         "real client tool call, then replays the original run_officejs identity "
         "with the client tool result on the next request. Interpret that result as "
         "the named client tool's output. Native update_plan may be used normally "
@@ -1092,22 +1274,21 @@ def _client_tool_protocol_reminder(source: dict) -> str:
     before the previous request's final item and break the strict extension
     needed for the upstream cache to reuse the growing conversation.
     """
-    allowed_tools = client_tool_types(source)
+    allowed_tools = declared_tool_types(source)
     if not allowed_tools:
         return ""
     code_mode = _code_mode(allowed_tools)
     reminder = (
         "Reminder: use the outer native run_officejs transport (a host may display "
         "it as functions.run_officejs); it never executes Office code here. Put "
-        "exactly one JSON object as JSON text in code, with name set to one catalog client tool "
-        "below. Never set the inner name to run_officejs or functions.run_officejs, "
+        "exactly one JSON object as JSON text in code, with name set to one client tool "
+        "of the catalog above. Never set the inner name to run_officejs or functions.run_officejs, "
         "and never nest another transport envelope. The code field is not JavaScript"
         + (" (JavaScript goes only in exec's input)" if code_mode else "")
         + "; serialize the inner JSON and escape backslashes and quotes in shell commands. Example inner code: "
         + (CODE_MODE_EXAMPLE if code_mode else '{"name":"exec_command","arguments":{"cmd":"pwd"}}')
-        + ". Do not merely say you will act or that access is unavailable. Client tools: "
-        + ", ".join(sorted(allowed_tools))
-        + ". Other native tools are unavailable."
+        + ". Do not merely say you will act or that access is unavailable. "
+        "Other native tools are unavailable."
     )
     if "shell_command" in allowed_tools:
         reminder += " For repository inspection transport shell_command."
@@ -1161,7 +1342,7 @@ def extract_client_tool_call(
     if name is None:
         return None
     tool_type = allowed_tools.get(name)
-    if tool_type == "function":
+    if tool_type in {"function", TOOL_SEARCH}:
         arguments = marker.get("arguments")
         if isinstance(arguments, str):
             try:
@@ -1171,6 +1352,9 @@ def extract_client_tool_call(
         if not isinstance(arguments, dict):
             return None
         call_id = f"{CLIENT_MARKER_CALL_ID_PREFIX}{uuid4().hex}"
+        if tool_type == TOOL_SEARCH:
+            search = _tool_search_arguments(arguments)
+            return _tool_search_call(call_id, search) if search is not None else None
         return {
             "type": "function_call",
             "id": responses_replay_ids.function_item_id(call_id),
@@ -1601,7 +1785,11 @@ def _decoded_arguments(value: object) -> object:
     return value
 
 
-def _transport_failure(item: dict, allowed_tools: dict[str, str] | None) -> str:
+def _transport_failure(
+    item: dict,
+    allowed_tools: dict[str, str] | None,
+    specs: dict[str, dict] | None = None,
+) -> str:
     """Why a run_officejs call of the model's could not become one of Codex's tools."""
     arguments = _decoded_arguments(item.get("arguments"))
     if not isinstance(arguments, dict):
@@ -1648,7 +1836,13 @@ def _transport_failure(item: dict, allowed_tools: dict[str, str] | None) -> str:
         return _MALFORMED_TRANSPORT
     if not isinstance(_decoded_arguments(envelope.get("arguments")), dict):
         return f"the arguments for {tool} were not a JSON object"
-    return f"its arguments did not match the parameters of {tool}"
+    reason = f"its arguments did not match the parameters of {tool}"
+    info = (specs or {}).get(tool)
+    if info is not None and _summarized(info["namespace"]):
+        # The catalog only summarizes this tool; here is all of it.
+        definition = _catalog_entry(tool, info["namespace"], info["type"], info["spec"], full=True)
+        reason += ", which is defined as " + json.dumps(definition, separators=(",", ":"), ensure_ascii=False)
+    return reason
 
 
 def _normalized_tool_output(
@@ -1705,6 +1899,8 @@ def _fallback_transport_call(item: dict) -> dict:
     name = _client_tool_key(
         str(item.get("name") or ""), namespace if isinstance(namespace, str) and namespace else None
     )
+    if item.get("type") == TOOL_SEARCH_CALL:
+        name = TOOL_SEARCH
     if item.get("type") == "custom_tool_call":
         envelope: dict[str, object] = {
             "name": name,
@@ -1767,9 +1963,22 @@ def _strip_client_only_item_metadata(item: dict) -> dict:
     return sanitized
 
 
+def _search_output_text(item: dict) -> str:
+    """What a tool_search found, for the model: the full definition of each tool it loaded."""
+    tools = item.get("tools") if isinstance(item.get("tools"), list) else []
+    catalog = _catalog_json(tools, full=True)
+    if catalog == "[]":
+        return "No matching tools found."
+    return (
+        "tool_search loaded these tools; call them through run_officejs like catalog tools, "
+        "by the name given here:\n" + catalog
+    )
+
+
 def translate_input_items(
     raw_input: object,
     allowed_tools: dict[str, str] | None = None,
+    specs: dict[str, dict] | None = None,
 ) -> list:
     """Map Codex Responses input items onto the Excel wire vocabulary.
 
@@ -1782,6 +1991,8 @@ def translate_input_items(
     results are translated from Codex's display text to the ``{"status":"ok"}``
     object returned by Excel's real executor. Calls created by older proxy
     versions retain their namespaced marker representation.
+    Codex's tool_search calls and results become a run_officejs call and its
+    output, the result listing the tools the search loaded.
     Reasoning items that carry ``encrypted_content`` (which the upstream issues
     by default) are replayed unchanged for turn-to-turn continuity; bare
     reasoning items are dropped because with ``store: false`` the upstream
@@ -1825,7 +2036,7 @@ def translate_input_items(
                 # reached Codex as it was; wrapping it again would nest it.
                 if isinstance(call_id, str):
                     call_origins[call_id] = CLIENT_TOOL_TRANSPORT_NAME
-                    transport_failures[call_id] = _transport_failure(item, allowed_tools)
+                    transport_failures[call_id] = _transport_failure(item, allowed_tools, specs)
                 leaked = {
                     **item,
                     "type": "function_call",
@@ -1857,6 +2068,23 @@ def translate_input_items(
             continue
         if item_type in {"function_call_output", "custom_tool_call_output"}:
             result.append(_normalized_tool_output(item, call_origins, transport_failures))
+            continue
+        if item_type == TOOL_SEARCH_CALL:
+            call_id = item.get("call_id")
+            remembered = _remembered_native_call(call_id)
+            result.append(remembered if remembered is not None else _fallback_transport_call(item))
+            continue
+        if item_type == TOOL_SEARCH_OUTPUT:
+            call_id = item.get("call_id")
+            if isinstance(call_id, str) and call_id:
+                result.append(
+                    {
+                        "type": "function_call_output",
+                        "id": responses_replay_ids.function_item_id(call_id),
+                        "call_id": call_id,
+                        "output": _search_output_text(item),
+                    }
+                )
             continue
         if item_type == "agent_message" and isinstance(item.get("content"), list):
             result.append({**item, "content": _readable_parts(item["content"])})
@@ -1978,6 +2206,7 @@ def _agent_turn_state(raw_input: object) -> tuple[str, str]:
         is_result = isinstance(item, dict) and item.get("type") in {
             "function_call_output",
             "custom_tool_call_output",
+            TOOL_SEARCH_OUTPUT,
         }
         if is_result and not in_results:
             rounds += 1
@@ -2023,7 +2252,7 @@ def prepare_responses_body(
     }
 
     raw_input = source.get("input")
-    input_items = translate_input_items(raw_input, client_tool_types(source))
+    input_items = translate_input_items(raw_input, client_tool_types(source), _client_tool_specs(source))
     identity = raw_input if identity_input is None else identity_input
     # Captured before the prologue is prepended: the injected instructions and
     # catalog are identical across conversations, so only the caller's own

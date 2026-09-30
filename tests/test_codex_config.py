@@ -104,6 +104,16 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(models["gpt-6-sol-1m-excel"]["max_context_window"], 918_000)
         self.assertIn("918,000 token context", models["gpt-6-sol-1m-excel"]["description"])
 
+    def test_catalog_defers_app_and_mcp_tools_behind_tool_search(self):
+        # As OpenAI's catalog has it: the bridge handles tool_search, so Codex
+        # keeps app and MCP tools out of each request until a search loads them.
+        for model in codex_config.catalog_payload()["models"]:
+            with self.subTest(slug=model["slug"]):
+                self.assertIs(model["supports_search_tool"], True)
+                # Codex's notes on using skills and apps are the only ones these models get.
+                self.assertNotIn("include_skills_usage_instructions", model)
+                self.assertNotIn("include_apps_usage_instructions", model)
+
     def test_catalog_order_covers_every_served_model(self):
         self.assertEqual(sorted(codex_config.CATALOG_ORDER), sorted(excel_upstream.MODEL_IDS))
 

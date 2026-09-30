@@ -42,6 +42,7 @@ Codex CLI ──(Responses API, 127.0.0.1)──▶ excel-codex-bridge ──(HT
   backend's native `run_officejs`, and the bridge turns those back into Codex tool calls.
   Calls that do not depend on each other (reading several files, independent commands) come in
   one go and Codex runs them at the same time; file edits still happen one after another.
+  App and MCP tools load on demand and rarely used tools are summarized; see [Prompt size](#prompt-size).
 - **Several sessions at once.** Codex windows, desktop conversations and subagents can share one
   bridge and work at the same time without queuing.
 - **Pictures.** Pictures go to OpenAI only, like the rest of the request. Where the backend will
@@ -650,6 +651,40 @@ not a new backend level:
 
 After an update the bridge rewrites its model entries as soon as it starts; quit Codex fully and open
 it again to see `ultra` in the menu.
+
+## Prompt size
+
+From 0.5.21 the tool catalog the bridge writes into the prompt is much smaller, so each request takes
+less of the context and of your plan:
+
+- **App and MCP tools load on demand**: the model entries turn on Codex's `tool_search` (as OpenAI's
+  own entries do). The tools of the apps Codex brings along with a ChatGPT sign-in (GitHub, Gmail, ...)
+  and of MCP servers you set up no longer go into every request in full; the model gets `tool_search`
+  instead, searches when it needs one, and the tools found are defined in the conversation from then
+  on and called as usual. With apps on, 0.5.20 and earlier sent tens of thousands of extra tokens with
+  every request.
+- **The desktop app's own tools are summarized**: for the desktop app's `codex_app` tools (31 of them:
+  conversations, sidebar, worktrees, ...), and plugin or MCP tools sent directly rather than found by a
+  search, the catalog gives the first sentence or two of the description and each parameter's type.
+  When the model passes the wrong parameters, the bridge tells it why along with the tool's full
+  definition, and it tries again. Common tools (shell, apply_patch, subagents, image generation) are
+  still written out in full.
+- Fields in tool definitions that only a validator reads (`additionalProperties: false`, `title`, ...)
+  are left out of the prompt, and calls are still checked against the original definitions; the
+  reminder after the catalog no longer lists every tool name again.
+
+Measured (the same Codex requests; characters of prompt the bridge writes for the backend, not counting
+the ~22k-token prefix the Excel backend adds itself, which the bridge cannot remove):
+
+| Case | 0.5.20 | 0.5.21 |
+|---|---|---|
+| CLI, no apps | ~32k | ~30k |
+| Desktop, no apps | ~66k | ~46k |
+| CLI, ChatGPT apps on (about 200 tools) | ~300k | ~33k |
+| Desktop, ChatGPT apps on | ~340k | ~49k |
+
+What Codex adds itself (the skills list, the desktop app's notes on apps, `AGENTS.md`, ...) is passed on
+as it is.
 
 ## Codex without this tool's model catalog (relay configs, Cockpit)
 

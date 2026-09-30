@@ -1061,7 +1061,8 @@ class ExcelUpstreamTests(unittest.TestCase):
         self.assertIn("run_officejs", reminder)
         self.assertIn("functions.run_officejs", reminder)
         self.assertIn("Never set the inner name", reminder)
-        self.assertIn("demo", reminder)
+        # The catalog right above names the tools; the reminder does not repeat them.
+        self.assertNotIn("demo", reminder)
         self.assertEqual(body["input"][-1]["role"], "user")
         # Keep the compact cue small relative to the full catalog.
         self.assertLess(len(reminder), len(catalog) / 2)
@@ -1331,11 +1332,9 @@ class ExcelUpstreamTests(unittest.TestCase):
         body = excel_upstream.prepare_responses_body(source)
         catalog = body["input"][0]["content"][0]["text"]
         self.assertIn('"name":"computer_use.js"', catalog)
-        self.assertIn('"namespace":"computer_use"', catalog)
-        self.assertIn('"tool":"js"', catalog)
-        self.assertIn('"required":["code"]', catalog)
-        self.assertIn("Control desktop applications.", catalog)
-        self.assertIn("computer_use.js", body["input"][1]["content"][0]["text"])
+        # A plugin's namespace is summarized: its first sentence and each parameter's type.
+        self.assertIn('"summary":"Control desktop applications."', catalog)
+        self.assertIn('"parameters":{"code":"string, required"}', catalog)
 
         tool_call = excel_upstream.extract_native_client_tool_call(
             {
@@ -1367,6 +1366,241 @@ class ExcelUpstreamTests(unittest.TestCase):
             json.loads(tool_call["arguments"]),
             {"code": "await computer.use()"},
         )
+
+    TOOL_SEARCH_SPEC = {
+        "type": "tool_search",
+        "execution": "client",
+        "description": (
+            "# Tool discovery\n\nSearches over deferred tool metadata.\n\n"
+            "You have access to tools from the following sources:\n"
+            "- github: Access repositories. " + "Say more about GitHub here. " * 20 + "\n"
+            "- hotline: Look up helplines. Use it before giving one."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "number", "description": "Maximum number of tools to return."},
+                "query": {"type": "string", "description": "Search query for deferred tools."},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    }
+    LOADED_TOOLS = [
+        {
+            "type": "namespace",
+            "name": "mcp__fake",
+            "description": "Fake tools",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "echo",
+                    "description": "Echo the text back.",
+                    "strict": False,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string", "description": "What to echo."}},
+                        "required": ["text"],
+                        "additionalProperties": False,
+                    },
+                }
+            ],
+        }
+    ]
+
+    @staticmethod
+    def _transport(call_id: str, inner: dict) -> dict:
+        return {
+            "type": "function_call",
+            "id": f"fc_{call_id}",
+            "call_id": call_id,
+            "name": "run_officejs",
+            "arguments": json.dumps({"code": json.dumps(inner)}),
+        }
+
+    def test_tool_search_is_in_the_catalog_with_its_sources_shortened(self):
+        source = {"input": "Hi", "tools": [self.TOOL_SEARCH_SPEC]}
+        self.assertEqual(excel_upstream.client_tool_types(source), {"tool_search": "tool_search"})
+        catalog = excel_upstream._client_tool_protocol_instructions(source)
+        self.assertIn('"type":"function","name":"tool_search"', catalog)
+        self.assertIn("- github: Access repositories. Say more", catalog)
+        self.assertLess(catalog.count("Say more about GitHub here."), 20)
+        self.assertIn("- hotline: Look up helplines. Use it before giving one.", catalog)
+        self.assertNotIn("additionalProperties", catalog)
+        self.assertIn("tool_search loads more tools", catalog)
+
+    def test_tool_search_call_reaches_codex_and_replays_as_the_native_call(self):
+        source = {"input": "Hi", "tools": [self.TOOL_SEARCH_SPEC]}
+        native = self._transport("call_search", {"name": "tool_search", "arguments": {"query": "github", "limit": 3}})
+        call = excel_upstream.extract_native_client_tool_call({"output": [native]}, source)
+        self.assertEqual(
+            call,
+            {
+                "type": "tool_search_call",
+                "id": "tsc_call_search",
+                "call_id": "call_search",
+                "execution": "client",
+                "arguments": {"query": "github", "limit": 3},
+            },
+        )
+        payload = excel_upstream.response_payload_with_tool_calls({"output": [native]}, [call])
+        self.assertEqual(payload["output"], [{**call, "status": "completed"}])
+        # Codex's own shape for a fractional limit or a missing query is not a call.
+        for arguments in ({"query": "github", "limit": 2.5}, {"limit": 3}):
+            half = self._transport("call_bad", {"name": "tool_search", "arguments": arguments})
+            found = excel_upstream.extract_native_client_tool_call({"output": [half]}, source)
+            self.assertEqual(found and found.get("arguments"), {"query": "github"} if "query" in arguments else None)
+
+        replay = excel_upstream.translate_input_items(
+            [
+                {**call, "status": "completed"},
+                {"type": "tool_search_output", "call_id": "call_search", "status": "completed",
+                 "execution": "client", "tools": self.LOADED_TOOLS},
+            ],
+            excel_upstream.client_tool_types(source),
+        )
+        self.assertEqual(replay[0], native)
+        self.assertEqual(replay[1]["type"], "function_call_output")
+        self.assertEqual(replay[1]["call_id"], "call_search")
+        self.assertIn('"name":"mcp__fake.echo"', replay[1]["output"])
+        self.assertIn('"description":"Echo the text back."', replay[1]["output"])
+        self.assertIn('"required":["text"]', replay[1]["output"])
+
+    def test_tool_search_call_without_its_native_call_is_rebuilt(self):
+        replay = excel_upstream.translate_input_items(
+            [
+                {"type": "tool_search_call", "call_id": "call_lost", "execution": "client",
+                 "arguments": {"query": "mail"}},
+                {"type": "tool_search_output", "call_id": "call_lost", "execution": "client", "tools": []},
+            ]
+        )
+        self.assertEqual(replay[0]["name"], "run_officejs")
+        self.assertEqual(replay[0]["call_id"], "call_lost")
+        code = json.loads(json.loads(replay[0]["arguments"])["code"])
+        self.assertEqual(code, {"name": "tool_search", "arguments": {"query": "mail"}})
+        self.assertEqual(replay[1]["output"], "No matching tools found.")
+        self.assertEqual(replay[1]["id"], excel_upstream.responses_replay_ids.function_item_id("call_lost"))
+
+    def test_tools_a_search_loaded_stay_callable_but_out_of_the_catalog(self):
+        history = [
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Echo hi"}]},
+            {"type": "tool_search_call", "call_id": "call_s", "execution": "client", "arguments": {"query": "echo"}},
+            {"type": "tool_search_output", "call_id": "call_s", "execution": "client", "tools": self.LOADED_TOOLS},
+        ]
+        source = {"model": "gpt-6-sol-excel", "input": history, "tools": [self.TOOL_SEARCH_SPEC]}
+        self.assertEqual(
+            excel_upstream.client_tool_types(source),
+            {"tool_search": "tool_search", "mcp__fake.echo": "function"},
+        )
+        body = excel_upstream.prepare_responses_body(source)
+        self.assertNotIn("mcp__fake", body["input"][0]["content"][0]["text"])
+        self.assertNotIn("mcp__fake", body["input"][1]["content"][0]["text"])
+        # A search's result is a new round of the same user turn.
+        self.assertEqual(body["metadata"]["agent_iteration"], "2")
+
+        native = self._transport("call_echo", {"name": "mcp__fake.echo", "arguments": {"text": "hi"}})
+        call = excel_upstream.extract_native_client_tool_call({"output": [native]}, source)
+        self.assertEqual(call["type"], "function_call")
+        self.assertEqual((call["namespace"], call["name"]), ("mcp__fake", "echo"))
+        self.assertEqual(json.loads(call["arguments"]), {"text": "hi"})
+
+    def test_other_namespaces_are_summarized_and_a_miss_returns_the_whole_tool(self):
+        tool = {
+            "type": "function",
+            "name": "open",
+            "description": "Open a panel. The calling window gets it by default. " + "More words" * 30 + ".",
+            "parameters": {
+                "type": "object",
+                "title": "Open",
+                "properties": {
+                    "placement": {"type": "string", "enum": ["right", "bottom"]},
+                    "target": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}, "line": {"type": "integer"}},
+                        "required": ["path"],
+                        "additionalProperties": False,
+                    },
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Labels. Shown in the tab."},
+                },
+                "required": ["target"],
+                "additionalProperties": False,
+            },
+        }
+        source = {
+            "input": "Hi",
+            "tools": [
+                {"type": "namespace", "name": "codex_app", "tools": [tool]},
+                {"type": "namespace", "name": "collaboration", "tools": [{**tool, "name": "spawn_agent"}]},
+            ],
+        }
+        catalog = excel_upstream._client_tool_protocol_instructions(source)
+        summary = catalog.split("Available client tools:\n", 1)[1].split("\nRemember:", 1)[0]
+        entries = json.loads(summary)
+        self.assertEqual(
+            entries[0],
+            {
+                "type": "function",
+                "name": "codex_app.open",
+                "summary": "Open a panel. The calling window gets it by default.",
+                "parameters": {
+                    "placement": '"right"|"bottom"',
+                    "target": "{path: string; line?: integer}, required",
+                    "tags": "string[]: Labels. Shown in the tab.",
+                },
+            },
+        )
+        # collaboration stays in full, without what only a validator reads.
+        self.assertEqual(entries[1]["description"], tool["description"])
+        self.assertEqual(entries[1]["parameters"]["properties"]["placement"]["enum"], ["right", "bottom"])
+        self.assertNotIn("title", entries[1]["parameters"])
+        self.assertNotIn("additionalProperties", json.dumps(entries[1]))
+        self.assertIn("An entry with summary instead of description", catalog)
+
+        miss = self._transport("call_miss", {"name": "codex_app.open", "arguments": {"target": {"line": 3}}})
+        self.assertIsNone(excel_upstream.extract_native_client_tool_call({"output": [miss]}, source))
+        replay = excel_upstream.translate_input_items(
+            [miss, {"type": "function_call_output", "call_id": "call_miss", "output": "unsupported call: run_officejs"}],
+            excel_upstream.client_tool_types(source),
+            excel_upstream._client_tool_specs(source),
+        )
+        guidance = replay[1]["output"]
+        self.assertIn("did not match the parameters of codex_app.open, which is defined as", guidance)
+        self.assertIn('"required":["path"]', guidance)
+        self.assertIn("More wordsMore words", guidance)
+
+    def test_compact_schema_keeps_parameters_named_like_keywords(self):
+        schema = {
+            "type": "object",
+            "title": "CreateIssue",
+            "properties": {
+                "title": {"type": "string", "title": "Title"},
+                "additionalProperties": {"type": "boolean"},
+                "labels": {"type": "array", "items": {"type": "string", "title": "Label"}},
+                "state": {"type": "string", "enum": ["open", "closed"], "default": "open"},
+            },
+            "required": ["title"],
+            "additionalProperties": False,
+        }
+        self.assertEqual(
+            excel_upstream._compact_schema(schema),
+            {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "additionalProperties": {"type": "boolean"},
+                    "labels": {"type": "array", "items": {"type": "string"}},
+                    "state": {"type": "string", "enum": ["open", "closed"], "default": "open"},
+                },
+                "required": ["title"],
+            },
+        )
+
+    def test_leading_sentences_keep_whole_sentences_that_fit(self):
+        cut = excel_upstream._leading_sentences
+        self.assertEqual(cut("Use e.g. this one. Then more.", 20), "Use e.g. this one.")
+        self.assertEqual(cut("Short.", 5 + 1), "Short.")
+        self.assertEqual(cut("A" * 30, 10), "AAAAAAA...")
+        self.assertEqual(cut("打开面板。然后关闭。", 6), "打开面板。")
 
     def test_compaction_trigger_stays_final_after_tool_reminder(self):
         body = excel_upstream.prepare_responses_body(
@@ -2116,6 +2350,33 @@ class ExcelStreamTransformTests(unittest.TestCase):
             json.loads(completed["output"][1]["arguments"]),
             {"command": "Get-ChildItem"},
         )
+        self.assertNotIn("run_officejs", json.dumps(events))
+
+    def test_tool_search_streams_as_a_finished_item(self):
+        source = {"tools": [ExcelUpstreamTests.TOOL_SEARCH_SPEC]}
+        native_item = ExcelUpstreamTests._transport(
+            "call_stream_search", {"name": "tool_search", "arguments": {"query": "gmail"}}
+        )
+        chunks = [
+            self._sse("response.created", {"type": "response.created", "response": {"id": "resp_s"}}),
+            self._sse(
+                "response.output_item.done",
+                {"type": "response.output_item.done", "output_index": 0, "item": native_item},
+            ),
+            self._sse(
+                "response.completed",
+                {"type": "response.completed",
+                 "response": {"id": "resp_s", "status": "completed", "output": [native_item]}},
+            ),
+        ]
+        events = self._collect(chunks, source)
+        names = [name for name, _ in events]
+        self.assertEqual(names, ["response.created", "response.output_item.added",
+                                 "response.output_item.done", "response.completed"])
+        done = dict(events)["response.output_item.done"]["item"]
+        self.assertEqual(done["type"], "tool_search_call")
+        self.assertEqual(done["arguments"], {"query": "gmail"})
+        self.assertEqual(done["status"], "completed")
         self.assertNotIn("run_officejs", json.dumps(events))
 
     def test_native_client_tool_keeps_upstream_output_index_after_reasoning(self):

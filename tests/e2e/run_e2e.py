@@ -64,6 +64,12 @@ feature switch: the bridge's model entries must turn on multi-agent v2 and
 Codex's unasked delegation by themselves, and the backend must be asked for
 xhigh, the deepest it has (it refuses ``max`` and ``ultra``).
 
+``--tool-search`` gives Codex an MCP server (a fake one, next to the backend):
+with the bridge's model entries Codex keeps its tools out of the request and
+offers ``tool_search`` instead.  The first answer searches, the second calls
+the tool the search loaded, and its output must reach the model; the tool
+must never join the catalog at the top of the prompt.
+
 ``--lite`` runs Codex through a relay the way a relay's config template sets it
 up, with ``serve`` in the relay's place and without the bridge's model
 entries: Codex's own for this model then send the tools in an input item
@@ -194,6 +200,32 @@ def transport_call(n: int, name: str, arguments: dict | str) -> dict:
 
 
 IMAGE_PROMPT = "a blue whale in a spreadsheet"
+# --tool-search: the MCP server Codex is given, its one tool, and what the tool answers.
+MCP_SERVER = "e2e_fake"
+MCP_TOOL = "echo_probe"
+MCP_ECHO = "mcp-e2e-BRIDGE-E2E-42"
+FAKE_MCP = f"""import json, sys
+TOOL = {{"name": {MCP_TOOL!r}, "description": "Echo probe for the bridge e2e: says the text back.",
+        "inputSchema": {{"type": "object", "properties": {{"text": {{"type": "string"}}}}, "required": ["text"]}},
+        "annotations": {{"readOnlyHint": True}}}}
+for line in sys.stdin:
+    message = json.loads(line)
+    if "id" not in message:
+        continue
+    method = message.get("method")
+    if method == "initialize":
+        result = {{"protocolVersion": message["params"].get("protocolVersion", "2025-06-18"),
+                  "capabilities": {{"tools": {{}}}}, "serverInfo": {{"name": {MCP_SERVER!r}, "version": "1"}}}}
+    elif method == "tools/list":
+        result = {{"tools": [TOOL]}}
+    elif method == "tools/call":
+        text = message["params"].get("arguments", {{}}).get("text", "")
+        result = {{"content": [{{"type": "text", "text": "mcp-e2e-" + text.upper()}}]}}
+    else:
+        result = {{}}
+    sys.stdout.write(json.dumps({{"jsonrpc": "2.0", "id": message["id"], "result": result}}) + "\\n")
+    sys.stdout.flush()
+"""
 # --subagent: what the model asks the helper it spawns to do.
 SUBAGENT_TASK = "Count the rows of the sheet and say subagent-task-e2e."
 EXIT_IP = "1.1.1.1"
@@ -217,7 +249,8 @@ def exit_zone_for(now: dt.datetime) -> str:
 class FakeExcelBackend:
     def __init__(self, parallel: bool = False, imagegen: bool = False, refuse: str | None = None,
                  exit_zone: str = "Pacific/Kiritimati", rate_limited: int = 0,
-                 rate_limited_for: float = 0.0, subagent: bool = False, lite: bool = False) -> None:
+                 rate_limited_for: float = 0.0, subagent: bool = False, lite: bool = False,
+                 tool_search: bool = False) -> None:
         self.requests: list[dict] = []
         # With subagent: the helper's own requests, kept apart since they come alongside the rest.
         self.helper_requests: list[dict] = []
@@ -312,10 +345,14 @@ class FakeExcelBackend:
                 # A turn over before the helper asks anything ends it with Codex.
                 with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(helper_asked.wait(), 60)
-            if n == 1:
+            loaded = re.search(rf"mcp__{MCP_SERVER}\.{MCP_TOOL}", raw) if tool_search and n == 2 else None
+            if n == 1 or loaded:
                 name, arguments = code_mode_call(raw) if lite else shell_call(raw)
                 self.shell_tool = name
                 items = [transport_call(1, name, arguments)]
+                if tool_search:
+                    items = [transport_call(n, "tool_search", {"query": "echo probe"}) if n == 1
+                             else transport_call(n, loaded.group(0), {"text": "bridge-e2e-42"})]
                 if imagegen:
                     items = [transport_call(1, "image_gen.imagegen", {"prompt": IMAGE_PROMPT})]
                 if parallel:
@@ -324,7 +361,7 @@ class FakeExcelBackend:
                     items.append(transport_call(len(items) + 1, "collaboration.spawn_agent",
                                                 {"message": SUBAGENT_TASK, "task_name": "helper"}))
                 events = [sse("response.created", {"type": "response.created",
-                              "response": {"id": "resp_1", "status": "in_progress", "output": []}})]
+                              "response": {"id": f"resp_{n}", "status": "in_progress", "output": []}})]
                 for index, item in enumerate(items):
                     events += [
                         sse("response.output_item.added", {"type": "response.output_item.added",
@@ -339,12 +376,14 @@ class FakeExcelBackend:
                             "output_index": index, "item": item}),
                     ]
                 events.append(sse("response.completed", {"type": "response.completed", "response": {
-                    "id": "resp_1", "status": "completed", "model": body.get("model"),
+                    "id": f"resp_{n}", "status": "completed", "model": body.get("model"),
                     "output": items, "usage": USAGE}}))
             else:
                 seen = "bridge-e2e-42" in raw and (not parallel or "bridge-e2e-43" in raw)
                 if imagegen:
                     seen = f"data:image/png;base64,{self.drawn}" in raw
+                if tool_search:
+                    seen = MCP_ECHO in raw
                 text = "done: tool output seen" if seen else "done: tool output MISSING"
                 events = message_events(n, text, body.get("model"))
 
@@ -932,6 +971,8 @@ def main() -> int:
     parser.add_argument("--ultra", action="store_true",
                         help="like --subagent, with Codex's ultra effort instead of the feature switch; "
                         "the backend is asked for xhigh")
+    parser.add_argument("--tool-search", action="store_true",
+                        help="give Codex an MCP server: the model must find its tool with tool_search, then call it")
     parser.add_argument("--lite", action="store_true",
                         help="run Codex through a relay without the bridge's model entries, so it sends "
                         "the tools the Responses Lite way and calls them through code mode's exec")
@@ -954,6 +995,8 @@ def main() -> int:
         parser.error("--lite runs Codex through a relay of its own")
     if args.ultra and (args.lite or args.subagent):
         parser.error("--ultra needs the bridge's model entries, and no feature switch")
+    if args.tool_search and (args.lite or args.parallel or args.imagegen or args.subagent or args.ultra):
+        parser.error("--tool-search needs the bridge's model entries and a first answer of its own")
     if Path(launcher[0]).exists():
         launcher[0] = str(Path(launcher[0]).resolve())
 
@@ -971,7 +1014,8 @@ def main() -> int:
                                refuse="e2e-codex-account" if args.codex_login == "refused" else None,
                                exit_zone=exit_zone, rate_limited=2 if args.rate_limited == "briefly" else 0,
                                rate_limited_for=LONG_RATE_LIMIT_SECONDS if args.rate_limited == "long" else 0,
-                               subagent=args.subagent or args.ultra, lite=args.lite)
+                               subagent=args.subagent or args.ultra, lite=args.lite,
+                               tool_search=args.tool_search)
     server, port = start_server(backend.app)
     gate = Gate(port, NETWORK_DROP_SECONDS) if args.network_drop else None
 
@@ -996,6 +1040,12 @@ def main() -> int:
         args.codex_args[-1:-1] = ["-c", "features.multi_agent_v2=true"]
     if args.ultra:
         args.codex_args[args.codex_args.index("model_reasoning_effort=high")] = "model_reasoning_effort=ultra"
+    if args.tool_search:
+        fake_mcp = root / "fake_mcp.py"
+        fake_mcp.write_text(FAKE_MCP, encoding="utf-8")
+        # TOML literal strings: a Windows path's backslashes stay as they are.
+        args.codex_args[-1:-1] = ["-c", f"mcp_servers.{MCP_SERVER}.command='{sys.executable}'",
+                                  "-c", f"mcp_servers.{MCP_SERVER}.args=['{fake_mcp}']"]
     args.backend, args.first_requests = backend, 0
     picture = png()
     if args.images:
@@ -1040,7 +1090,7 @@ def main() -> int:
          f"upstream model is not {upstream_model}"),
         (all(r.get("reasoning_effort") == ("xhigh" if args.ultra else "high") for r in backend.requests),
          "reasoning effort from the subcommand -c did not arrive"),
-        (args.imagegen or len(backend.requests) >= 2
+        (args.imagegen or args.tool_search or len(backend.requests) >= 2
          and f"PP=[{USER_PYTHONPATH}]" in json.dumps(backend.requests[1]),
          "Codex's commands saw a different PYTHONPATH"),
         (not backend.unexpected, f"unexpected upstream paths: {backend.unexpected}"),
@@ -1149,6 +1199,29 @@ def main() -> int:
              f"the helper was not given the task as text: {told}"),
             (not any(part.get("type") == "encrypted_content" for part in told),
              f"the helper was given the task as encrypted content: {told}"),
+        ]
+    if args.tool_search:
+        def prologue(body: dict) -> str:
+            # The bridge's catalog and reminder: what leads every request.
+            return "\n".join(part.get("text", "") for item in body.get("input", [])[:3]
+                             if isinstance(item, dict) and item.get("role") == "developer"
+                             for part in item.get("content", []) if isinstance(part, dict))
+
+        results = [item.get("output") for item in (backend.requests[1].get("input", [])
+                                                    if len(backend.requests) >= 2 else [])
+                   if isinstance(item, dict) and item.get("type") == "function_call_output"]
+        checks += [
+            (len(backend.requests) == 3, f"expected search, call and answer (3 requests), got {len(backend.requests)}"),
+            (bool(backend.requests) and '"name":"tool_search"' in prologue(backend.requests[0]),
+             "the catalog did not offer tool_search"),
+            (not any(MCP_TOOL in prologue(body) for body in backend.requests),
+             "the MCP tool joined the catalog at the top of the prompt"),
+            (bool(backend.requests) and MCP_TOOL not in json.dumps(backend.requests[0]),
+             "Codex sent the MCP tool before any search"),
+            (any(f"mcp__{MCP_SERVER}.{MCP_TOOL}" in str(output) for output in results),
+             f"the search result did not define the MCP tool: {results}"),
+            ([body.get("metadata", {}).get("agent_iteration") for body in backend.requests] == ["1", "2", "3"],
+             "each tool result should be a new agent iteration of the same turn"),
         ]
     if args.lite:
         # What the bridge told the model: its catalog is a developer message.

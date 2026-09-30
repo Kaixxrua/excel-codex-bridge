@@ -176,7 +176,11 @@ def catalog_payload() -> dict[str, object]:
                 "experimental_supported_tools": [],
                 # Codex desktop refuses pasted pictures for a model without "image" here.
                 "input_modalities": list(caps["input_modalities"]),
-                "supports_search_tool": False,
+                # As OpenAI's own catalog has it: app and MCP tools wait behind
+                # tool_search instead of going out in full with every request.
+                # (Its include_*_usage_instructions stay on: OpenAI's models
+                # carry that guidance in their own instructions, these do not.)
+                "supports_search_tool": True,
             }
         )
     return {"models": models}

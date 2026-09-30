@@ -238,6 +238,18 @@ def _completed_event_bytes(response_payload: dict) -> bytes:
 def _tool_call_item_event_bytes(tool_call: dict, *, output_index: int) -> list[bytes]:
     item = dict(tool_call)
     item["status"] = "in_progress"
+    if tool_call["type"] == excel_upstream.TOOL_SEARCH_CALL:
+        # A tool_search call streams no arguments: Codex reads them from the finished item.
+        return [
+            format_translation.sse_encode(
+                event,
+                {"type": event, "output_index": output_index, "item": payload},
+            )
+            for event, payload in (
+                ("response.output_item.added", item),
+                ("response.output_item.done", {**tool_call, "status": "completed"}),
+            )
+        ]
     if tool_call["type"] == "function_call":
         item["arguments"] = ""
         value_key = "arguments"
