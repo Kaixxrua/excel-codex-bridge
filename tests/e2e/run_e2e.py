@@ -59,6 +59,11 @@ and Codex must see an answer, not the drop.
 also spawn a helper agent (``collaboration.spawn_agent``).  The helper must be
 given the task as text: labelled encrypted, the backend could not read it.
 
+``--ultra`` does the same with Codex's ``ultra`` effort instead of the
+feature switch: the bridge's model entries must turn on multi-agent v2 and
+Codex's unasked delegation by themselves, and the backend must be asked for
+xhigh, the deepest it has (it refuses ``max`` and ``ultra``).
+
 ``--lite`` runs Codex through a relay the way a relay's config template sets it
 up, with ``serve`` in the relay's place and without the bridge's model
 entries: Codex's own for this model then send the tools in an input item
@@ -924,6 +929,9 @@ def main() -> int:
                         f"{CODEX_IDLE_MS // 1000} s; the bridge waits them out")
     parser.add_argument("--subagent", action="store_true",
                         help="also spawn a helper agent (Codex's multi_agent_v2); it must get the task as text")
+    parser.add_argument("--ultra", action="store_true",
+                        help="like --subagent, with Codex's ultra effort instead of the feature switch; "
+                        "the backend is asked for xhigh")
     parser.add_argument("--lite", action="store_true",
                         help="run Codex through a relay without the bridge's model entries, so it sends "
                         "the tools the Responses Lite way and calls them through code mode's exec")
@@ -944,6 +952,8 @@ def main() -> int:
         parser.error("--rate-limited long sets the idle timeout of the bridge's own provider")
     if args.lite and (args.shared or args.migrate or args.desktop):
         parser.error("--lite runs Codex through a relay of its own")
+    if args.ultra and (args.lite or args.subagent):
+        parser.error("--ultra needs the bridge's model entries, and no feature switch")
     if Path(launcher[0]).exists():
         launcher[0] = str(Path(launcher[0]).resolve())
 
@@ -961,7 +971,7 @@ def main() -> int:
                                refuse="e2e-codex-account" if args.codex_login == "refused" else None,
                                exit_zone=exit_zone, rate_limited=2 if args.rate_limited == "briefly" else 0,
                                rate_limited_for=LONG_RATE_LIMIT_SECONDS if args.rate_limited == "long" else 0,
-                               subagent=args.subagent, lite=args.lite)
+                               subagent=args.subagent or args.ultra, lite=args.lite)
     server, port = start_server(backend.app)
     gate = Gate(port, NETWORK_DROP_SECONDS) if args.network_drop else None
 
@@ -984,6 +994,8 @@ def main() -> int:
         args.codex_args[-1:-1] = ["-c", f"model_providers.excel-bridge.stream_idle_timeout_ms={CODEX_IDLE_MS}"]
     if args.subagent:
         args.codex_args[-1:-1] = ["-c", "features.multi_agent_v2=true"]
+    if args.ultra:
+        args.codex_args[args.codex_args.index("model_reasoning_effort=high")] = "model_reasoning_effort=ultra"
     args.backend, args.first_requests = backend, 0
     picture = png()
     if args.images:
@@ -1026,7 +1038,7 @@ def main() -> int:
         (len(backend.requests) >= 2, f"expected 2+ upstream requests, got {len(backend.requests)}"),
         (all(r.get("model") == upstream_model for r in backend.requests),
          f"upstream model is not {upstream_model}"),
-        (all(r.get("reasoning_effort") == "high" for r in backend.requests),
+        (all(r.get("reasoning_effort") == ("xhigh" if args.ultra else "high") for r in backend.requests),
          "reasoning effort from the subcommand -c did not arrive"),
         (args.imagegen or len(backend.requests) >= 2
          and f"PP=[{USER_PYTHONPATH}]" in json.dumps(backend.requests[1]),
@@ -1046,7 +1058,7 @@ def main() -> int:
         threads = codex_threads(Path(env["CODEX_HOME"]))
         official = codex_config.codex_model(args.model)
         # A helper agent is a conversation of its own.
-        checks.append((threads == [("openai", official)] * (2 if args.subagent else 1),
+        checks.append((threads == [("openai", official)] * (2 if args.subagent or args.ultra else 1),
                        f"the conversation should be filed as the official sign-in files it, got {threads}"))
     if args.parallel and len(backend.requests) >= 2:
         replayed = [(item.get("type"), item.get("call_id") if item.get("type") == "function_call_output"
@@ -1110,7 +1122,20 @@ def main() -> int:
             (not any(said in output.lower() for said in ("rate limit", "reconnecting", "disconnected")),
              "Codex saw the rate limit, or gave up on the stream"),
         ]
+    # Codex's developer message for ultra; below it, one saying to spawn only when asked.
+    delegating = "proactive multi-agent delegation is active" in (
+        json.dumps(backend.requests[0]).lower() if backend.requests else "")
+    if args.ultra:
+        # Codex sends ultra as the entries' multi_agent_reasoning_effort, and only
+        # multi-agent v2 (turned on by the entries alone here) tells the model to delegate.
+        efforts = [body.get("reasoning_effort") for body in backend.requests + backend.helper_requests]
+        checks += [
+            (bool(efforts) and set(efforts) == {"xhigh"}, f"expected xhigh in every request, got {efforts}"),
+            (delegating, "Codex did not tell the model to hand work to helpers unasked"),
+        ]
     if args.subagent:
+        checks.append((not delegating, "Codex told the model to hand work to helpers unasked"))
+    if args.subagent or args.ultra:
         # Codex labels the task encrypted unless the call says its arguments are
         # plain; the backend then cannot read it ("encrypted content ... could not be decoded").
         told = [part for body in backend.helper_requests for item in body.get("input", [])

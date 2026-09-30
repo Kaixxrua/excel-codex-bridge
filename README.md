@@ -156,7 +156,11 @@ excel-codex threads migrate --from OpenAI     把中转站 provider（OpenAI）�
   关掉桥接后接着聊，超出官方窗口的部分 Codex 会先压缩；官方后端能不能接受这么长的压缩请求还没实测。
   对话很长又要关掉桥接时，建议开着桥接先压缩一次（`/compact`）。
 
-推理强度 `low` / `medium` / `high` / `xhigh`，默认 `medium`。
+推理强度 `low` / `medium` / `high` / `xhigh`，默认 `medium`。gpt-5.6-sol、gpt-5.6-terra、gpt-6-sol、gpt-6-astra
+（含 1M 版）还能选 `ultra`（0.5.20 起），见 [Ultra](#ultra)。
+
+Codex 的 Fast（更快、更耗额度的 `service_tier`）用不了：Excel 后端不认这个字段，带上就返回 HTTP 422，
+所以模型菜单里没有它。
 
 想试别的上游模型时，可以设置 `GHCP_EXCEL_UPSTREAM_MODEL=<上游模型名>`，把所有请求强制发给那个模型。
 
@@ -496,6 +500,22 @@ Codex 的子代理（多代理 v2 的 `collaboration.spawn_agent` / `send_messag
 
 真正由别的后端加密的内容（比如关掉桥接、用官方登录接着聊时留下的）Excel 后端读不了。后端因此报错时，
 桥接把这些内容换成一句说明再发一次，窗口里写 `the Excel backend could not read what another backend encrypted`。
+
+### Ultra
+
+0.5.20 起，gpt-5.6-sol、gpt-5.6-terra、gpt-6-sol、gpt-6-astra（含 1M 版）的推理强度里多了 `ultra`；
+和官方一样，luna 模型没有。ultra 是 Codex 自己的模式，不是后端的新档位：
+
+- 发给后端的推理强度是 `xhigh`。Excel 后端最高到 `xhigh`，直接发 `max`、`ultra` 会被拒（HTTP 422）；
+  官方 gpt-6-astra 的 ultra 发的也是 `xhigh`。
+- Codex 会主动把任务拆给子代理并行做，不用你开口。每个子代理都单独请求后端，额度用得更多；
+  每一步的思考并不会更快。
+- 这些模型的新对话改用多代理 v2（`collaboration.*` 那组工具，和官方一样）。不选 ultra 时，子代理只在你要求时才用；
+  已有的对话保留原来的子代理工具。
+- 配置里写了 `model_reasoning_effort = "max"`，或者别的客户端发来 `max` / `ultra`，桥接都按 `xhigh` 发
+  （0.5.19 及更早会落回默认的 `medium`）。
+
+升级后桥接一启动就会重写模型目录，Codex 要完全退出再打开，菜单里才会出现 `ultra`。
 
 ## 不带本工具模型目录的 Codex（中转站配置、Cockpit）
 

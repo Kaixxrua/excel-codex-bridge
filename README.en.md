@@ -184,7 +184,11 @@ Every model comes in two versions: the same upstream model with a different cont
   backend accepts a compaction that long has not been tested. Before closing the bridge on a long
   conversation, compact it once with the bridge on (`/compact`).
 
-Reasoning effort `low` / `medium` / `high` / `xhigh`, default `medium`.
+Reasoning effort `low` / `medium` / `high` / `xhigh`, default `medium`. gpt-5.6-sol, gpt-5.6-terra,
+gpt-6-sol and gpt-6-astra (1M versions too) also have `ultra` (from 0.5.20); see [Ultra](#ultra).
+
+Codex's Fast (the quicker `service_tier` that uses more of your plan) is not available: the Excel
+backend does not know that field and answers HTTP 422 when it is sent, so the model menu leaves it out.
 
 To try any other upstream model, set `GHCP_EXCEL_UPSTREAM_MODEL=<upstream name>`, which sends
 every request to that model.
@@ -626,6 +630,26 @@ What another backend really encrypted (left, say, by carrying a conversation on 
 the official sign-in) the Excel backend cannot read. When the backend fails on it, the bridge replaces
 it with a note and sends the request again; the window says `the Excel backend could not read what
 another backend encrypted`.
+
+### Ultra
+
+From 0.5.20, gpt-5.6-sol, gpt-5.6-terra, gpt-6-sol and gpt-6-astra (1M versions too) have `ultra`
+among their reasoning efforts; as with OpenAI's own, the luna models do not. Ultra is Codex's own mode,
+not a new backend level:
+
+- The backend is asked for `xhigh`. The Excel backend goes up to `xhigh` and refuses `max` and `ultra`
+  sent as they are (HTTP 422); OpenAI's gpt-6-astra sends `xhigh` for ultra too.
+- Codex hands parts of the task to subagents working in parallel without being asked. Each subagent
+  makes its own requests to the backend, so it uses more of your plan; each step does not think any
+  faster.
+- New conversations with these models use multi-agent v2 (the `collaboration.*` tools, as OpenAI's
+  own do). Below ultra, subagents are used only when you ask for them; existing conversations keep the
+  subagent tools they had.
+- `model_reasoning_effort = "max"` in the config, or `max` / `ultra` from another client, goes to the
+  backend as `xhigh` (0.5.19 and earlier fell back to the default `medium`).
+
+After an update the bridge rewrites its model entries as soon as it starts; quit Codex fully and open
+it again to see `ultra` in the menu.
 
 ## Codex without this tool's model catalog (relay configs, Cockpit)
 

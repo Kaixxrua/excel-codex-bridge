@@ -76,6 +76,10 @@ _REASONING_EFFORT_ALIASES = {
     "x-high": "xhigh",
     "extra-high": "xhigh",
     "extra_high": "xhigh",
+    # The backend refuses both (HTTP 422); xhigh is the deepest it has.  Codex
+    # itself sends ultra as the catalog's multi_agent_reasoning_effort.
+    "max": "xhigh",
+    "ultra": "xhigh",
 }
 EXTERNAL_CLIENT_INSTRUCTIONS = (
     "This request is relayed by an external OpenAI Responses API client, not by "

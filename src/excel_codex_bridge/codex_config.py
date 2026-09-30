@@ -90,6 +90,32 @@ _REASONING_LEVEL_DESCRIPTIONS = {
     "xhigh": "Extra high reasoning depth for complex problems",
 }
 
+# Codex's ultra is Codex's own: it sends the model the catalog's
+# multi_agent_reasoning_effort (the backend's deepest, xhigh) and has it hand
+# parts of the task to helper agents unasked, which takes multi-agent v2.
+# Codex offers it for the sol, terra and astra models, not for luna.
+ULTRA = "ultra"
+ULTRA_DESCRIPTION = "Extra high reasoning with automatic task delegation"
+ULTRA_REASONING_EFFORT = excel_upstream.EXCEL_REASONING_EFFORTS[-1]
+
+
+def has_ultra(model_id: str) -> bool:
+    return not excel_upstream.EXCEL_MODEL_UPSTREAMS[model_id].endswith("-luna")
+
+
+def _reasoning_levels(model_id: str) -> dict[str, object]:
+    levels = [
+        {"effort": effort, "description": _REASONING_LEVEL_DESCRIPTIONS[effort]}
+        for effort in excel_upstream.EXCEL_REASONING_EFFORTS
+    ]
+    if not has_ultra(model_id):
+        return {"supported_reasoning_levels": levels}
+    return {
+        "supported_reasoning_levels": [*levels, {"effort": ULTRA, "description": ULTRA_DESCRIPTION}],
+        "multi_agent_version": "v2",
+        "multi_agent_reasoning_effort": ULTRA_REASONING_EFFORT,
+    }
+
 
 def state_dir() -> Path:
     override = os.environ.get("EXCEL_BRIDGE_HOME", "").strip()
@@ -124,10 +150,7 @@ def catalog_payload() -> dict[str, object]:
                     "counts against your ChatGPT plan, not API billing."
                 ),
                 "default_reasoning_level": "medium",
-                "supported_reasoning_levels": [
-                    {"effort": effort, "description": _REASONING_LEVEL_DESCRIPTIONS[effort]}
-                    for effort in excel_upstream.EXCEL_REASONING_EFFORTS
-                ],
+                **_reasoning_levels(model_id),
                 "shell_type": "shell_command",
                 "visibility": visibility,
                 "supported_in_api": True,

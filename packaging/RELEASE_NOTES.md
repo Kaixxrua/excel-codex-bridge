@@ -1,22 +1,23 @@
-双击恢复官方 Codex 配置 · Double-click to put Codex back on its own setup
+Codex 的 ultra 推理强度 · Codex's ultra reasoning effort
 
 > **非官方项目**，与 OpenAI、Microsoft 无关联。使用加载项后端可能违反 OpenAI 服务条款，风险自负。
 > **Unofficial.** Not affiliated with OpenAI or Microsoft. Using the add-in's backend may violate OpenAI's terms; use at your own risk.
 
 ## 变化
 
-- **新增 `excel-codex-restore.cmd`（macOS / Linux：`excel-codex-restore.command`，命令行：`excel-codex restore`），
-  双击就让 Codex 回到官方配置**：撤掉 `excel-codex desktop` 写进 `config.toml` 的内容（窗口被强制关掉、
-  没来得及还原时也管用），把手动粘贴的桥接设置（`print-config` 片段、`model_provider = "excel-bridge"`、
-  `-excel` 模型名、桥接的模型列表、指向本机桥接的 `openai_base_url`）注释掉并先备份原文件；Codex 登录过时
-  把桥接自己名下的对话并进官方列表；Windows 上把系统时区改回去。它不联网、不启动桥接；中转站等不是桥接的设置
-  不会动，只在窗口里列出来。
-- 详见 README 的
-  [恢复官方 Codex 配置](https://github.com/Kaixxrua/excel-codex-bridge#恢复官方-codex-配置)。
+- **模型菜单里多了 Codex 的 `ultra`**：gpt-5.6-sol、gpt-5.6-terra、gpt-6-sol、gpt-6-astra（含 1M 版）可以选，
+  luna 模型和官方一样没有。选了 ultra，Codex 会主动把任务拆给子代理并行做；发给 Excel 后端的推理强度是
+  `xhigh`（后端最高到 `xhigh`，官方 gpt-6-astra 的 ultra 发的也是它）。每个子代理都单独请求后端，额度用得更多。
+- 这些模型的新对话改用多代理 v2（`collaboration.*` 工具，和官方一样）；已有的对话不变。
+- 配置里的 `max`，或者别的客户端直接发来的 `max` / `ultra`，改按 `xhigh` 发（以前会落回默认的 `medium`）。
+- Codex 的 Fast 用不了：Excel 后端不认 `service_tier`，带上就返回 HTTP 422。README 里写明了。
+- 详见 README 的 [Ultra](https://github.com/Kaixxrua/excel-codex-bridge#ultra)。升级后要完全退出 Codex 再打开，
+  菜单里才会出现 `ultra`。
 
 0.5.13 起双击 `excel-codex-desktop.cmd` 会自动装上这一版；0.5.12 及更早的版本需要手动下载替换一次。
 
-0.5.18 的变化（模型思考时连接不再被代理当闲置关掉）见
+0.5.19 的变化（双击恢复官方 Codex 配置）见
+[v0.5.19 发布说明](https://github.com/Kaixxrua/excel-codex-bridge/releases/tag/v0.5.19)；0.5.18 的变化（模型思考时连接不再被代理当闲置关掉）见
 [v0.5.18 发布说明](https://github.com/Kaixxrua/excel-codex-bridge/releases/tag/v0.5.18)；0.5.17 的变化（回复中途断开时显示原因，不再只报 `stream closed before response.completed`）见
 [v0.5.17 发布说明](https://github.com/Kaixxrua/excel-codex-bridge/releases/tag/v0.5.17)；0.5.16 的变化（压缩长对话、写长工具调用时不再报 `idle timeout waiting for SSE`）见
 [v0.5.16 发布说明](https://github.com/Kaixxrua/excel-codex-bridge/releases/tag/v0.5.16)；0.5.15 的变化（升级后模型菜单还是旧的时说清原因、手动 `serve` 跟着更新模型列表）见
@@ -35,18 +36,18 @@
 
 ## 下载
 
-- **Windows**：`excel-codex-bridge-0.5.19-windows-x64.zip`。解压后双击 `excel-codex.exe` 打开 Codex CLI，
+- **Windows**：`excel-codex-bridge-0.5.20-windows-x64.zip`。解压后双击 `excel-codex.exe` 打开 Codex CLI，
   双击 `excel-codex-desktop.cmd` 给桌面版用，双击 `excel-codex-restore.cmd` 恢复官方 Codex 配置。
-- **macOS（Apple 芯片）**：`excel-codex-bridge-0.5.19-macos-arm64.tar.gz`
-- **macOS（Intel）**：`excel-codex-bridge-0.5.19-macos-x64.tar.gz`
+- **macOS（Apple 芯片）**：`excel-codex-bridge-0.5.20-macos-arm64.tar.gz`
+- **macOS（Intel）**：`excel-codex-bridge-0.5.20-macos-x64.tar.gz`
 - **Linux / WSL 或从源码运行**：下载 Source code，使用 `excel-codex.sh`（需要 Python 3.10+）。
-- **Linux / VPS 的 SUB2API 部署**：下载本版本 Source code，按 [部署文档](https://github.com/Kaixxrua/excel-codex-bridge/blob/v0.5.19/docs/sub2api.md) 构建 `packaging/sub2api/compose.yaml`。
+- **Linux / VPS 的 SUB2API 部署**：下载本版本 Source code，按 [部署文档](https://github.com/Kaixxrua/excel-codex-bridge/blob/v0.5.20/docs/sub2api.md) 构建 `packaging/sub2api/compose.yaml`。
 
 macOS 推荐在终端用 `curl` 下载，这样不会被"无法验证开发者"拦下（Intel 芯片把 `arm64` 换成 `x64`）：
 
 ```
-curl -fL https://github.com/Kaixxrua/excel-codex-bridge/releases/download/v0.5.19/excel-codex-bridge-0.5.19-macos-arm64.tar.gz | tar xz
-./excel-codex-bridge-0.5.19-macos-arm64/excel-codex status
+curl -fL https://github.com/Kaixxrua/excel-codex-bridge/releases/download/v0.5.20/excel-codex-bridge-0.5.20-macos-arm64.tar.gz | tar xz
+./excel-codex-bridge-0.5.20-macos-arm64/excel-codex status
 ```
 
 用浏览器下载的，解压后先运行一次 `xattr -dr com.apple.quarantine <解压出的目录>`。
@@ -63,22 +64,26 @@ curl -fL https://github.com/Kaixxrua/excel-codex-bridge/releases/download/v0.5.1
 
 ## Changes
 
-- **New: `excel-codex-restore.cmd` (macOS / Linux: `excel-codex-restore.command`; command line:
-  `excel-codex restore`) puts Codex back on its own setup with a double-click**: it takes out what
-  `excel-codex desktop` wrote into `config.toml` (also when its window was killed before it could put
-  the config back), comments out the bridge's settings pasted in by hand (a `print-config` snippet,
-  `model_provider = "excel-bridge"`, `-excel` model names, the bridge's model list, an
-  `openai_base_url` pointing at a local bridge) after saving the file as it was, moves the bridge's
-  own conversations into Codex's list when Codex is signed in, and on Windows puts the system timezone
-  back. It goes online for nothing and starts no bridge; settings that are not the bridge's, such as a
-  relay's, stay as they are and are only listed.
-- See [Back to Codex's own setup](https://github.com/Kaixxrua/excel-codex-bridge/blob/main/README.en.md#back-to-codexs-own-setup)
-  in the README.
+- **Codex's `ultra` in the model menu**: for gpt-5.6-sol, gpt-5.6-terra, gpt-6-sol and gpt-6-astra
+  (1M versions too); as with OpenAI's own, the luna models do not have it. With ultra, Codex hands parts
+  of the task to subagents working in parallel without being asked, and the Excel backend is asked for
+  `xhigh` (the deepest it has; OpenAI's gpt-6-astra sends it for ultra too). Each subagent makes its own
+  requests, so it uses more of your plan.
+- New conversations with these models use multi-agent v2 (the `collaboration.*` tools, as OpenAI's
+  own do); existing conversations stay as they are.
+- `max` in the config, or `max` / `ultra` sent by another client, now goes to the backend as `xhigh`
+  (it used to fall back to the default `medium`).
+- Codex's Fast is not available: the Excel backend does not know `service_tier` and answers HTTP 422
+  when it is sent. The README says so now.
+- See [Ultra](https://github.com/Kaixxrua/excel-codex-bridge/blob/main/README.en.md#ultra) in the
+  README. After updating, quit Codex fully and open it again to see `ultra` in the menu.
 
 From 0.5.13, double-clicking `excel-codex-desktop.cmd` installs this release by itself; 0.5.12 and
 earlier need it downloaded and replaced by hand once.
 
-For 0.5.18's changes (the connection no longer closed as idle while the model thinks), see the
+For 0.5.19's changes (a double-click that puts Codex back on its own setup), see the
+[v0.5.19 release notes](https://github.com/Kaixxrua/excel-codex-bridge/releases/tag/v0.5.19);
+for 0.5.18's changes (the connection no longer closed as idle while the model thinks), see the
 [v0.5.18 release notes](https://github.com/Kaixxrua/excel-codex-bridge/releases/tag/v0.5.18);
 for 0.5.17's changes (Codex saying why an answer broke off instead of just `stream closed before
 response.completed`), see the [v0.5.17 release notes](https://github.com/Kaixxrua/excel-codex-bridge/releases/tag/v0.5.17);
@@ -104,20 +109,20 @@ the [v0.5.4 release notes](https://github.com/Kaixxrua/excel-codex-bridge/releas
 
 ## Download
 
-- **Windows**: `excel-codex-bridge-0.5.19-windows-x64.zip`. Double-click `excel-codex.exe` for the
+- **Windows**: `excel-codex-bridge-0.5.20-windows-x64.zip`. Double-click `excel-codex.exe` for the
   Codex CLI, `excel-codex-desktop.cmd` for the desktop app, or `excel-codex-restore.cmd` to put Codex
   back on its own setup.
-- **macOS (Apple silicon)**: `excel-codex-bridge-0.5.19-macos-arm64.tar.gz`
-- **macOS (Intel)**: `excel-codex-bridge-0.5.19-macos-x64.tar.gz`
+- **macOS (Apple silicon)**: `excel-codex-bridge-0.5.20-macos-arm64.tar.gz`
+- **macOS (Intel)**: `excel-codex-bridge-0.5.20-macos-x64.tar.gz`
 - **Linux / WSL, or from source**: download the source code and use `excel-codex.sh` (Python 3.10+).
-- **Linux / VPS with SUB2API**: download this release's source and follow the [deployment guide](https://github.com/Kaixxrua/excel-codex-bridge/blob/v0.5.19/docs/sub2api.en.md).
+- **Linux / VPS with SUB2API**: download this release's source and follow the [deployment guide](https://github.com/Kaixxrua/excel-codex-bridge/blob/v0.5.20/docs/sub2api.en.md).
 
 On a Mac, downloading with `curl` avoids the "developer cannot be verified" block (Intel: replace
 `arm64` with `x64`):
 
 ```
-curl -fL https://github.com/Kaixxrua/excel-codex-bridge/releases/download/v0.5.19/excel-codex-bridge-0.5.19-macos-arm64.tar.gz | tar xz
-./excel-codex-bridge-0.5.19-macos-arm64/excel-codex status
+curl -fL https://github.com/Kaixxrua/excel-codex-bridge/releases/download/v0.5.20/excel-codex-bridge-0.5.20-macos-arm64.tar.gz | tar xz
+./excel-codex-bridge-0.5.20-macos-arm64/excel-codex status
 ```
 
 If you downloaded with a browser, run `xattr -dr com.apple.quarantine <extracted folder>` once.

@@ -119,6 +119,12 @@ class ExcelUpstreamTests(unittest.TestCase):
             "high": "high",
             "xhigh": "xhigh",
             "x-high": "xhigh",
+            # The backend refuses these two; xhigh is its deepest.
+            "max": "xhigh",
+            "ultra": "xhigh",
+            "ULTRA": "xhigh",
+            # Unknown ones stay on the default.
+            "persistent": "medium",
         }
         for requested, forwarded in expected.items():
             with self.subTest(requested=requested):
@@ -1660,10 +1666,18 @@ class ExcelUpstreamTests(unittest.TestCase):
             {
                 "model": "gpt-5.6-sol-excel",
                 "input": "Hello",
-                "reasoning": {"effort": "ultra"},
+                "reasoning": {"effort": "persistent"},
             }
         )
         self.assertEqual(body["reasoning_effort"], "medium")
+
+    def test_ultra_and_max_ask_the_backend_for_xhigh(self):
+        for effort in ("ultra", "max"):
+            with self.subTest(effort=effort):
+                body = excel_upstream.prepare_responses_body(
+                    {"model": "gpt-5.6-sol-excel", "input": "Hello", "reasoning": {"effort": effort}}
+                )
+                self.assertEqual(body["reasoning_effort"], "xhigh")
 
     def test_function_tool_marker_is_converted_only_for_allowed_tool(self):
         marker = (

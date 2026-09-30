@@ -43,7 +43,7 @@ class CatalogTests(unittest.TestCase):
             self.assertTrue(model["supports_parallel_tool_calls"])
             self.assertLess(model["auto_compact_token_limit"], model["context_window"])
             efforts = [level["effort"] for level in model["supported_reasoning_levels"]]
-            self.assertEqual(efforts, ["low", "medium", "high", "xhigh"])
+            self.assertEqual(efforts[:4], ["low", "medium", "high", "xhigh"])
         windows = {m["slug"]: m["context_window"] for m in models}
         self.assertEqual(len(windows), 12)
         for base in ("5.6-sol", "5.6-terra", "5.6-luna", "6-sol", "6-luna", "6-astra"):
@@ -55,6 +55,28 @@ class CatalogTests(unittest.TestCase):
             {"gpt-6-sol": "6-Sol Excel", "gpt-6-sol-1m-excel": "6-Sol Excel 1M"},
         )
         self.assertFalse(any("experimental" in m["description"] for m in models))
+
+    def test_ultra_where_codex_has_it(self):
+        # Codex sends ultra as multi_agent_reasoning_effort and hands work to helpers
+        # unasked (multi-agent v2); the backend goes no deeper than xhigh.
+        models = {m["slug"]: m for m in codex_config.catalog_payload()["models"]}
+        for slug, model in models.items():
+            with self.subTest(slug=slug):
+                efforts = [level["effort"] for level in model["supported_reasoning_levels"]]
+                if "-luna" in slug:
+                    self.assertEqual(efforts, ["low", "medium", "high", "xhigh"])
+                    self.assertNotIn("multi_agent_version", model)
+                    self.assertNotIn("multi_agent_reasoning_effort", model)
+                else:
+                    self.assertEqual(efforts, ["low", "medium", "high", "xhigh", "ultra"])
+                    self.assertEqual(model["multi_agent_version"], "v2")
+                    self.assertEqual(model["multi_agent_reasoning_effort"], "xhigh")
+        self.assertEqual(
+            sorted(slug for slug, model in models.items() if model["visibility"] == "list"
+                   and "multi_agent_version" in model),
+            ["gpt-5.6-sol", "gpt-5.6-sol-1m-excel", "gpt-5.6-terra", "gpt-5.6-terra-1m-excel",
+             "gpt-6-astra", "gpt-6-astra-1m-excel", "gpt-6-sol", "gpt-6-sol-1m-excel"],
+        )
 
     def test_old_names_stay_for_conversations_started_with_them(self):
         models = {m["slug"]: m for m in codex_config.catalog_payload()["models"]}

@@ -99,6 +99,10 @@ jobs:
         run: python tests/e2e/run_e2e.py --subagent -- ./excel-codex.sh
       - name: e2e (excel-codex.sh desktop, a helper agent given its task as text)
         run: python tests/e2e/run_e2e.py --desktop --shared --subagent -- ./excel-codex.sh
+      - name: e2e (excel-codex.sh, ultra effort delegating to helpers, backend asked for xhigh)
+        run: python tests/e2e/run_e2e.py --ultra -- ./excel-codex.sh
+      - name: e2e (excel-codex.sh desktop, ultra effort delegating to helpers, backend asked for xhigh)
+        run: python tests/e2e/run_e2e.py --desktop --shared --ultra -- ./excel-codex.sh
       - name: e2e (excel-codex.sh, Responses Lite and code mode through a relay without the bridge's model entries)
         run: python tests/e2e/run_e2e.py --lite -- ./excel-codex.sh
       - name: e2e (excel-codex.sh, Responses Lite and code mode, gpt-6-sol)
@@ -175,6 +179,8 @@ jobs:
         run: python tests/e2e/run_e2e.py --subagent -- dist/excel-codex/excel-codex.exe
       - name: e2e (excel-codex.exe desktop, a helper agent given its task as text)
         run: python tests/e2e/run_e2e.py --desktop --shared --subagent -- dist/excel-codex/excel-codex.exe
+      - name: e2e (excel-codex.exe desktop, ultra effort delegating to helpers, backend asked for xhigh)
+        run: python tests/e2e/run_e2e.py --desktop --shared --ultra -- dist/excel-codex/excel-codex.exe
       - name: e2e (excel-codex.exe, Responses Lite and code mode through a relay without the bridge's model entries)
         run: python tests/e2e/run_e2e.py --lite -- dist/excel-codex/excel-codex.exe
       - name: e2e (excel-codex.cmd)
@@ -261,6 +267,8 @@ jobs:
         run: python tests/e2e/run_e2e.py --rate-limited long -- dist/excel-codex/excel-codex
       - name: e2e (excel-codex, a helper agent given its task as text)
         run: python tests/e2e/run_e2e.py --subagent -- dist/excel-codex/excel-codex
+      - name: e2e (excel-codex, ultra effort delegating to helpers, backend asked for xhigh)
+        run: python tests/e2e/run_e2e.py --ultra -- dist/excel-codex/excel-codex
       - name: e2e (excel-codex, Responses Lite and code mode through a relay without the bridge's model entries)
         run: python tests/e2e/run_e2e.py --lite -- dist/excel-codex/excel-codex
 
