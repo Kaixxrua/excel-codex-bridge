@@ -1,24 +1,22 @@
-回复中途断开时显示原因，不再只报 stream closed before response.completed · Codex now says why an answer broke off instead of just "stream closed before response.completed"
+模型思考时连接不再被代理当闲置关掉 · The connection no longer gets closed as idle while the model thinks
 
 > **非官方项目**，与 OpenAI、Microsoft 无关联。使用加载项后端可能违反 OpenAI 服务条款，风险自负。
 > **Unofficial.** Not affiliated with OpenAI or Microsoft. Using the add-in's backend may violate OpenAI's terms; use at your own risk.
 
 ## 变化
 
-- **回复中途断开时，Codex 显示原因，不再只报 `stream closed before response.completed`**：Excel 后端有时回复
-  到一半就断开连接（桥接窗口里是 `upstream stream ended abnormally: RemoteProtocolError`），有时断开前还用
-  Codex 不认的方式报了一个错。以前 Codex 只知道流断了，报
-  `stream disconnected before completion: stream closed before response.completed` 并反复重发，原因看不到；
-  对话超出上下文窗口这种重发也没用的错误，也会一直重发。现在桥接把原因转给 Codex：后端报了错就显示那个错，
-  超出上下文窗口时 Codex 会提示上下文已满、发下一条消息时先自动压缩；后端什么也没说就断开，就显示是回复
-  开始几秒后断开的、怎么断开的，Codex 照常自动重发。桥接窗口里会记下断开前收到了多少事件、最后一个是什么。
-- 后端用 `error` 事件报的限流，现在也会像 0.5.8 起的限流一样先等一等再重发。
+- **不再在回复开始一两分钟后报 `The Excel backend closed the connection N minutes into the answer`**：模型先思考、
+  一个字还没写出来时，连接上可能几分钟都没有数据，不少代理节点和路由器会把这样的连接当作闲置关掉（有的 1 分钟
+  就关），后端又没办法接着上次的回答往下发，Codex 只能从头重发，还可能在同样的地方再被断开。现在桥接和后端之间
+  改用 HTTP/2，回复进行中每 10 秒在连接上发一个 PING（后端会回应），路上的每一段都能看到连接还在用。
+  `EXCEL_BRIDGE_UPSTREAM_PING=<秒>` 可改间隔（`1`–`60`），`0` 不发 PING 并改回 HTTP/1.1。
 - 详见 README 的
-  [在 Codex 桌面版 / IDE 插件中使用](https://github.com/Kaixxrua/excel-codex-bridge#在-codex-桌面版--ide-插件中使用)。
+  [网络中断](https://github.com/Kaixxrua/excel-codex-bridge#网络中断)。
 
 0.5.13 起双击 `excel-codex-desktop.cmd` 会自动装上这一版；0.5.12 及更早的版本需要手动下载替换一次。
 
-0.5.16 的变化（压缩长对话、写长工具调用时不再报 `idle timeout waiting for SSE`）见
+0.5.17 的变化（回复中途断开时显示原因，不再只报 `stream closed before response.completed`）见
+[v0.5.17 发布说明](https://github.com/Kaixxrua/excel-codex-bridge/releases/tag/v0.5.17)；0.5.16 的变化（压缩长对话、写长工具调用时不再报 `idle timeout waiting for SSE`）见
 [v0.5.16 发布说明](https://github.com/Kaixxrua/excel-codex-bridge/releases/tag/v0.5.16)；0.5.15 的变化（升级后模型菜单还是旧的时说清原因、手动 `serve` 跟着更新模型列表）见
 [v0.5.15 发布说明](https://github.com/Kaixxrua/excel-codex-bridge/releases/tag/v0.5.15)；0.5.14 的变化（中转站 / Cockpit 下不再报 `exec is not a tool in the catalog`）见
 [v0.5.14 发布说明](https://github.com/Kaixxrua/excel-codex-bridge/releases/tag/v0.5.14)；0.5.13 的变化（双击 `excel-codex-desktop.cmd` 自动更新）见
@@ -35,18 +33,18 @@
 
 ## 下载
 
-- **Windows**：`excel-codex-bridge-0.5.17-windows-x64.zip`。解压后双击 `excel-codex.exe` 打开 Codex CLI，
+- **Windows**：`excel-codex-bridge-0.5.18-windows-x64.zip`。解压后双击 `excel-codex.exe` 打开 Codex CLI，
   双击 `excel-codex-desktop.cmd` 给桌面版用。
-- **macOS（Apple 芯片）**：`excel-codex-bridge-0.5.17-macos-arm64.tar.gz`
-- **macOS（Intel）**：`excel-codex-bridge-0.5.17-macos-x64.tar.gz`
+- **macOS（Apple 芯片）**：`excel-codex-bridge-0.5.18-macos-arm64.tar.gz`
+- **macOS（Intel）**：`excel-codex-bridge-0.5.18-macos-x64.tar.gz`
 - **Linux / WSL 或从源码运行**：下载 Source code，使用 `excel-codex.sh`（需要 Python 3.10+）。
-- **Linux / VPS 的 SUB2API 部署**：下载本版本 Source code，按 [部署文档](https://github.com/Kaixxrua/excel-codex-bridge/blob/v0.5.17/docs/sub2api.md) 构建 `packaging/sub2api/compose.yaml`。
+- **Linux / VPS 的 SUB2API 部署**：下载本版本 Source code，按 [部署文档](https://github.com/Kaixxrua/excel-codex-bridge/blob/v0.5.18/docs/sub2api.md) 构建 `packaging/sub2api/compose.yaml`。
 
 macOS 推荐在终端用 `curl` 下载，这样不会被"无法验证开发者"拦下（Intel 芯片把 `arm64` 换成 `x64`）：
 
 ```
-curl -fL https://github.com/Kaixxrua/excel-codex-bridge/releases/download/v0.5.17/excel-codex-bridge-0.5.17-macos-arm64.tar.gz | tar xz
-./excel-codex-bridge-0.5.17-macos-arm64/excel-codex status
+curl -fL https://github.com/Kaixxrua/excel-codex-bridge/releases/download/v0.5.18/excel-codex-bridge-0.5.18-macos-arm64.tar.gz | tar xz
+./excel-codex-bridge-0.5.18-macos-arm64/excel-codex status
 ```
 
 用浏览器下载的，解压后先运行一次 `xattr -dr com.apple.quarantine <解压出的目录>`。
@@ -63,24 +61,23 @@ curl -fL https://github.com/Kaixxrua/excel-codex-bridge/releases/download/v0.5.1
 
 ## Changes
 
-- **Codex says why an answer broke off instead of just `stream closed before response.completed`**: the
-  Excel backend at times closes the connection mid-answer (the bridge window shows
-  `upstream stream ended abnormally: RemoteProtocolError`), sometimes after reporting an error in a way
-  Codex ignores. Codex saw only that the stream broke, failed with
-  `stream disconnected before completion: stream closed before response.completed` and sent the request
-  again and again without saying why, even for an error no retry fixes, such as a conversation past the
-  context window. Now the bridge passes the reason on: an error the backend reported shows as such (past
-  the context window, Codex says the context is full and compacts it before the next message), and a
-  connection closed without a word shows how many seconds into the answer and how it closed, with Codex
-  retrying by itself as before. The bridge window notes how many events arrived first and the last one.
-- A rate limit the backend reports in an `error` event is now waited out like the others since 0.5.8.
-- See [Codex desktop app / IDE extension](https://github.com/Kaixxrua/excel-codex-bridge/blob/main/README.en.md#codex-desktop-app--ide-extension)
+- **No more `The Excel backend closed the connection N minutes into the answer` a minute or two into an
+  answer**: while the model thinks, before it writes a word, the connection can carry nothing for
+  minutes, and many proxy nodes and routers close such a connection as idle (some after a minute). The
+  backend cannot carry on with that answer, so Codex started over, at times only to be cut off at the
+  same point again. The bridge now talks HTTP/2 to the backend and, while an answer is coming, sends a
+  PING on the connection every 10 seconds (the backend answers it), so every hop on the way sees it in
+  use. `EXCEL_BRIDGE_UPSTREAM_PING=<seconds>` sets the interval (`1` to `60`); `0` sends none and goes
+  back to HTTP/1.1.
+- See [Network drops](https://github.com/Kaixxrua/excel-codex-bridge/blob/main/README.en.md#network-drops)
   in the README.
 
 From 0.5.13, double-clicking `excel-codex-desktop.cmd` installs this release by itself; 0.5.12 and
 earlier need it downloaded and replaced by hand once.
 
-For 0.5.16's changes (no more `idle timeout waiting for SSE` during long compactions and long tool
+For 0.5.17's changes (Codex saying why an answer broke off instead of just `stream closed before
+response.completed`), see the [v0.5.17 release notes](https://github.com/Kaixxrua/excel-codex-bridge/releases/tag/v0.5.17);
+for 0.5.16's changes (no more `idle timeout waiting for SSE` during long compactions and long tool
 calls), see the [v0.5.16 release notes](https://github.com/Kaixxrua/excel-codex-bridge/releases/tag/v0.5.16);
 for 0.5.15's changes (saying why the model menu is an old one after an update, manual `serve` updating
 the model list), see the
@@ -102,19 +99,19 @@ the [v0.5.4 release notes](https://github.com/Kaixxrua/excel-codex-bridge/releas
 
 ## Download
 
-- **Windows**: `excel-codex-bridge-0.5.17-windows-x64.zip`. Double-click `excel-codex.exe` for the
+- **Windows**: `excel-codex-bridge-0.5.18-windows-x64.zip`. Double-click `excel-codex.exe` for the
   Codex CLI, or `excel-codex-desktop.cmd` for the desktop app.
-- **macOS (Apple silicon)**: `excel-codex-bridge-0.5.17-macos-arm64.tar.gz`
-- **macOS (Intel)**: `excel-codex-bridge-0.5.17-macos-x64.tar.gz`
+- **macOS (Apple silicon)**: `excel-codex-bridge-0.5.18-macos-arm64.tar.gz`
+- **macOS (Intel)**: `excel-codex-bridge-0.5.18-macos-x64.tar.gz`
 - **Linux / WSL, or from source**: download the source code and use `excel-codex.sh` (Python 3.10+).
-- **Linux / VPS with SUB2API**: download this release's source and follow the [deployment guide](https://github.com/Kaixxrua/excel-codex-bridge/blob/v0.5.17/docs/sub2api.en.md).
+- **Linux / VPS with SUB2API**: download this release's source and follow the [deployment guide](https://github.com/Kaixxrua/excel-codex-bridge/blob/v0.5.18/docs/sub2api.en.md).
 
 On a Mac, downloading with `curl` avoids the "developer cannot be verified" block (Intel: replace
 `arm64` with `x64`):
 
 ```
-curl -fL https://github.com/Kaixxrua/excel-codex-bridge/releases/download/v0.5.17/excel-codex-bridge-0.5.17-macos-arm64.tar.gz | tar xz
-./excel-codex-bridge-0.5.17-macos-arm64/excel-codex status
+curl -fL https://github.com/Kaixxrua/excel-codex-bridge/releases/download/v0.5.18/excel-codex-bridge-0.5.18-macos-arm64.tar.gz | tar xz
+./excel-codex-bridge-0.5.18-macos-arm64/excel-codex status
 ```
 
 If you downloaded with a browser, run `xattr -dr com.apple.quarantine <extracted folder>` once.

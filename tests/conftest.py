@@ -13,6 +13,8 @@ os.environ["EXCEL_BRIDGE_TIMEZONE"] = "off"
 os.environ["EXCEL_BRIDGE_CONNECT_WAIT"] = "0"
 # Nor draw with an image model chosen on this machine; test_image_generation.py sets its own.
 os.environ.pop("EXCEL_BRIDGE_IMAGE_MODEL", None)
+# Nor PING the backend at an interval chosen on this machine; test_upstream_ping.py sets its own.
+os.environ.pop("EXCEL_BRIDGE_UPSTREAM_PING", None)
 
 
 def _workflow_escape(text: str, *, prop: bool = False) -> str:

@@ -307,6 +307,13 @@ shows how many seconds into the answer and how it closed; Codex sends the reques
 before. If the same conversation keeps breaking off like this, the bridge window's
 `the answer stopped after …` line says what arrived before; include it when reporting it.
 
+**A turn fails with `stream disconnected before completion: The Excel backend closed the connection
+2 minutes into the answer, before finishing it (RemoteProtocolError: …)`**: nothing went over the
+connection while the model was thinking, and a proxy node or router on the way closed it as idle.
+From 0.5.18 the bridge sends an HTTP/2 PING on it every 10 seconds so it never goes idle; update, and
+see [Network drops](#network-drops). If it still breaks off a few minutes in, try another proxy node;
+include the bridge window's `the answer stopped after …` line when reporting it.
+
 **After an update the model menu is the old one: only 5.6-Sol, 6-Astra, 5.6-Terra and 5.6-Luna,
 without 6-Sol, 6-Luna and the 1M versions**. That is the model list of 0.5.1 and earlier. The
 desktop app reads the model list only when it starts. Common causes:
@@ -552,6 +559,16 @@ bps.openai.com (ConnectError)`. From 0.5.11 the bridge keeps trying itself:
 - `EXCEL_BRIDGE_CONNECT_WAIT=<seconds>` sets how long to keep trying: `120` by default, at most
   `1800`; `0` for no second try, the error then reaching Codex as it came.
 
+While the model thinks, before it writes a word, a connection can carry nothing for minutes. Many
+proxy nodes and routers close a connection that stays silent that long (some after a minute), and
+Codex shows `The Excel backend closed the connection N minutes into the answer …`; the backend cannot
+carry on with that answer, so it starts over. From 0.5.18 the bridge talks HTTP/2 to the backend and,
+while an answer is coming, sends a PING on the connection every 10 seconds (the backend answers it),
+so every hop on the way sees the connection in use:
+
+- `EXCEL_BRIDGE_UPSTREAM_PING=<seconds>` sets the interval: `10` by default, `1` to `60`; `0` for no
+  PINGs, and HTTP/1.1 as up to 0.5.17.
+
 ## Subagents
 
 Codex's subagents (multi-agent v2's `collaboration.spawn_agent` / `send_message` / `followup_task`)
@@ -746,6 +763,7 @@ double-click again, and what was downloaded is used without downloading it again
 | `EXCEL_BRIDGE_IMAGE_MODEL` | The model Codex's image tool asks the backend for, default `gpt-image-2` (same as `--image-model`), see [Image generation](#image-generation) |
 | `EXCEL_BRIDGE_RATE_LIMIT_WAIT` | Seconds to wait out a rate limit before Codex gets the error: `300` (5 minutes) by default, `0` for none, at most `1800`; see [Rate limits](#rate-limits) |
 | `EXCEL_BRIDGE_CONNECT_WAIT` | Seconds to keep trying when the backend cannot be reached: `120` (2 minutes) by default, `0` for no second try, at most `1800`; see [Network drops](#network-drops) |
+| `EXCEL_BRIDGE_UPSTREAM_PING` | Seconds between HTTP/2 PINGs on a connection while an answer is coming, so proxies do not close it as idle while the model thinks: `10` by default, `1` to `60`; `0` for none, and HTTP/1.1; see [Network drops](#network-drops) |
 | `CODEX_HOME` | Codex config folder whose `config.toml` `desktop` edits. Default `~/.codex` |
 | `GHCP_EXCEL_WEBVIEW2_DATA_DIR` | Windows WebView2 data root (same as `--webview-dir`) |
 | `GHCP_EXCEL_WEBKIT_WEBSITE_DATA_DIR` | macOS WebKit data folder |

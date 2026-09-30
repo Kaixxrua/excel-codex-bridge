@@ -34,6 +34,7 @@ from . import image_generation
 from . import images
 from . import session
 from . import sse
+from . import upstream_ping
 from .excel_stream import (
     OPENING_EVENTS,
     UPSTREAM_ERROR_CODE,
@@ -242,12 +243,20 @@ def _proxy_url() -> str | None:
 
 
 def build_upstream_client() -> httpx.AsyncClient:
-    """HTTP/1.1 client; honours EXCEL_BRIDGE_PROXY, else HTTPS_PROXY/system proxy."""
+    """HTTP/2 client (HTTP/1.1 with ``EXCEL_BRIDGE_UPSTREAM_PING=0``); honours EXCEL_BRIDGE_PROXY, else HTTPS_PROXY/system proxy.
+
+    HTTP/2 lets the bridge PING a connection while the model thinks (see ``upstream_ping``).
+    """
     timeout = httpx.Timeout(connect=30.0, read=600.0, write=60.0, pool=30.0)
     proxy = _proxy_url()
+    http2 = upstream_ping.ping_every() > 0
+    if http2 and not upstream_ping.http2_available():
+        log.warning("the h2 package is missing: HTTP/1.1 to the backend, without PINGs")
+        http2 = False
     return httpx.AsyncClient(
         timeout=timeout,
-        # Every conversation or subagent that is generating holds one connection.
+        http2=http2,
+        # Every conversation or subagent that is generating holds a connection (over HTTP/2, a stream of a shared one).
         limits=httpx.Limits(max_connections=64, max_keepalive_connections=8, keepalive_expiry=300.0),
         verify=True,
         proxy=proxy,
@@ -659,14 +668,17 @@ class Bridge:
         self._client: httpx.AsyncClient | None = None
         self.pictures = images.Pictures()
         self.timezone = exit_timezone.ExitTimezone(lambda: self.client)
+        self.pings = upstream_ping.UpstreamPings(lambda: self._client)
 
     @property
     def client(self) -> httpx.AsyncClient:
         if self._client is None:
             self._client = self._client_factory()
+        self.pings.start()
         return self._client
 
     async def aclose(self) -> None:
+        await self.pings.aclose()
         await self.timezone.aclose()
         if self._client is not None:
             await self._client.aclose()

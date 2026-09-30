@@ -250,6 +250,12 @@ Codex：后端报了错就显示那个错，比如对话超出了模型的上下
 压缩；后端什么也没说就断开，就显示是回复开始几秒后断开的、怎么断开的，Codex 照常自动重发。同一个对话每次都
 这样断开，桥接窗口里 `the answer stopped after …` 那一行写着断开前收到了什么，反馈时请附上。
 
+**报 `stream disconnected before completion: The Excel backend closed the connection 2 minutes into the answer,
+before finishing it (RemoteProtocolError: …)`**：模型思考的这段时间连接上没有数据，路上的代理节点或路由器
+把它当作闲置连接关掉了。0.5.18 起桥接每 10 秒在连接上发一个 HTTP/2 PING，不让它闲下来，升级即可，
+见[网络中断](#网络中断)。升级后还在几分钟处断开，换个代理节点试试；反馈时附上桥接窗口里
+`the answer stopped after …` 那一行。
+
 **升级后模型菜单还是旧的：只有 5.6-Sol、6-Astra、5.6-Terra、5.6-Luna，没有 6-Sol、6-Luna 和 1M 版**：
 这是 0.5.1 及更早版本的模型列表。桌面版只在启动时读取模型列表，常见原因：
 
@@ -442,6 +448,14 @@ Codex 会把本机的时区和日期写进每个对话（`<environment_context>`
 - `EXCEL_BRIDGE_CONNECT_WAIT=<秒>` 改最多等多久：默认 `120`，最多 `1800`；`0` 不重试，
   报错照原样交给 Codex。
 
+模型思考时一个字还没写出来，连接上可能几分钟都没有数据。不少代理节点和路由器会关掉这么久没有数据的连接
+（有的 1 分钟就关），Codex 就报 `The Excel backend closed the connection N minutes into the answer …`；
+后端没办法接着上次的回答往下发，只能从头重发。0.5.18 起桥接和后端之间用 HTTP/2，回复进行中每 10 秒在连接上
+发一个 PING（后端会回应），路上的每一段都能看到这个连接还在用：
+
+- `EXCEL_BRIDGE_UPSTREAM_PING=<秒>` 改间隔：默认 `10`，范围 `1`–`60`；`0` 不发 PING，
+  并像 0.5.17 及更早版本一样用 HTTP/1.1。
+
 ## 子代理
 
 Codex 的子代理（多代理 v2 的 `collaboration.spawn_agent` / `send_message` / `followup_task`）可以用。
@@ -591,6 +605,7 @@ Codex 里贴的截图、`codex -i 图片.png` 和模型用 `view_image` 看图�
 | `EXCEL_BRIDGE_IMAGE_MODEL` | 生图工具向后端请求的模型，默认 `gpt-image-2`（同 `--image-model`），见[生图](#生图) |
 | `EXCEL_BRIDGE_RATE_LIMIT_WAIT` | 被限流时最多等多少秒再把报错交给 Codex，默认 `300`（5 分钟），`0` 不等，最多 `1800`，见[限流](#限流) |
 | `EXCEL_BRIDGE_CONNECT_WAIT` | 连不上后端时最多再试多少秒，默认 `120`（2 分钟），`0` 不重试，最多 `1800`，见[网络中断](#网络中断) |
+| `EXCEL_BRIDGE_UPSTREAM_PING` | 回复进行中每隔多少秒在连接上发一个 HTTP/2 PING，免得代理把思考中的连接当闲置关掉，默认 `10`，范围 `1`–`60`；`0` 不发，并改用 HTTP/1.1，见[网络中断](#网络中断) |
 | `CODEX_HOME` | Codex 配置目录，`desktop` 改写其中的 `config.toml`。默认 `~/.codex` |
 | `GHCP_EXCEL_WEBVIEW2_DATA_DIR` | Windows WebView2 数据根目录（同 `--webview-dir`） |
 | `GHCP_EXCEL_WEBKIT_WEBSITE_DATA_DIR` | macOS WebKit 数据目录 |
