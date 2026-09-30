@@ -516,7 +516,13 @@ Codex 的子代理（多代理 v2 的 `collaboration.spawn_agent` / `send_messag
 - 配置里写了 `model_reasoning_effort = "max"`，或者别的客户端发来 `max` / `ultra`，桥接都按 `xhigh` 发
   （0.5.19 及更早会落回默认的 `medium`）。
 
-升级后桥接一启动就会重写模型目录，Codex 要完全退出再打开，菜单里才会出现 `ultra`。
+升级后桥接一启动就会重写模型目录，Codex 要完全退出再打开，菜单里才会出现 `ultra`。Codex 只在启动时读一次
+模型目录，已经在运行的 Codex 不会跟着更新：
+
+- 自己把桥接装成常驻服务、或手动 `serve` 的，先把它升级到 0.5.20 以上并重启，模型目录才会重写。
+- 桌面版连着常驻的 app-server 时（比如通过 SSH 连另一台机器，那台机器上会跑着
+  `codex app-server --managed-daemon`），模型菜单由它提供，关掉桌面版它也不退出。在它所在的机器上运行
+  `codex app-server daemon restart`（会打断正在进行的任务），再打开桌面版。
 
 ## 提示词大小
 

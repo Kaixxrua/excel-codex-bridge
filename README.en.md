@@ -650,7 +650,15 @@ not a new backend level:
   backend as `xhigh` (0.5.19 and earlier fell back to the default `medium`).
 
 After an update the bridge rewrites its model entries as soon as it starts; quit Codex fully and open
-it again to see `ultra` in the menu.
+it again to see `ultra` in the menu. Codex reads the model entries once, when it starts, and a Codex
+already running does not pick up new ones:
+
+- If you run the bridge as a service of your own, or `serve` by hand, update it to 0.5.20 or later and
+  restart it first, so the entries are rewritten.
+- When the desktop app talks to an app-server that stays running (over SSH to another machine, say,
+  which then runs `codex app-server --managed-daemon`), the model menu comes from that app-server, and
+  closing the desktop app does not stop it. Run `codex app-server daemon restart` on the machine it runs
+  on (it interrupts work in progress), then open the desktop app.
 
 ## Prompt size
 

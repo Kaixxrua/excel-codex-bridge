@@ -15,7 +15,9 @@
   - Excel 后端自带的约 2.2 万 token 前缀由后端加，桥接去不掉。
 - 详见 README 的[提示词大小](https://github.com/Kaixxrua/excel-codex-bridge#提示词大小)。
 - **菜单里没有 `ultra`**：0.5.20 的 `ultra` 要桥接重写模型目录后才出现。还在跑旧版桥接的（比如自己装成服务的），
-  升级到这一版并重启桥接，再完全退出 Codex 重新打开。
+  升级到这一版并重启桥接，再完全退出 Codex 重新打开。桌面版通过 SSH 连另一台机器时，还要在那台机器上运行
+  `codex app-server daemon restart`：那里常驻的 app-server 只在启动时读一次模型目录。README 的
+  [Ultra](https://github.com/Kaixxrua/excel-codex-bridge#ultra) 写明了。
 
 0.5.13 起双击 `excel-codex-desktop.cmd` 会自动装上这一版；0.5.12 及更早的版本需要手动下载替换一次。
 
@@ -84,7 +86,10 @@ curl -fL https://github.com/Kaixxrua/excel-codex-bridge/releases/download/v0.5.2
 - See [Prompt size](https://github.com/Kaixxrua/excel-codex-bridge/blob/main/README.en.md#prompt-size) in the README.
 - **No `ultra` in the menu**: 0.5.20's `ultra` appears once the bridge rewrites its model entries. If an
   older bridge is still running (one installed as a service, say), update it to this release and
-  restart it, then quit Codex fully and open it again.
+  restart it, then quit Codex fully and open it again. When the desktop app connects to another
+  machine over SSH, also run `codex app-server daemon restart` there: the app-server that stays
+  running there reads the model entries only when it starts. See
+  [Ultra](https://github.com/Kaixxrua/excel-codex-bridge/blob/main/README.en.md#ultra) in the README.
 
 From 0.5.13, double-clicking `excel-codex-desktop.cmd` installs this release by itself; 0.5.12 and
 earlier need it downloaded and replaced by hand once.
