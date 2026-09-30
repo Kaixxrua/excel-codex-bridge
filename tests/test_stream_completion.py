@@ -73,6 +73,20 @@ def officejs_call(index: int, command: str) -> list[bytes]:
     ]
 
 
+def error_event(code: str, message: str) -> bytes:
+    """The way Basispoints reports a failure first."""
+    return sse("error", {"type": "error", "error": {"type": "invalid_request_error", "code": code,
+                                                     "message": message, "param": None}, "sequence_number": 2})
+
+
+def failed(code: str, message: str) -> bytes:
+    return sse("response.failed", {"type": "response.failed", "response": {
+        "id": "resp_cut", "status": "failed", "error": {"code": code, "message": message}}})
+
+
+TOO_LONG = "Your input exceeds the context window of this model. Please adjust your input and try again."
+
+
 def completed(output: list[dict]) -> bytes:
     return sse("response.completed", {"type": "response.completed", "response": {
         "id": "resp_cut", "status": "completed", "output": output,
@@ -331,13 +345,70 @@ class KeepaliveTests(unittest.TestCase):
         output = [{"type": "message", "id": "msg_0", "role": "assistant", "content": []}]
         events, error = run([created(), completed(output).rstrip(b"\n")], then=cut(),
                             keepalive_every=15.0, tools=False)
-        self.assertIsInstance(error, httpx.RemoteProtocolError)
+        self.assertIsNone(error)
         self.assertEqual(self.names(events), ["response.created", "response.completed"])
 
     def test_a_cut_off_event_is_left_out(self):
         events, error = run([created(), completed([])[:40]], then=cut(), keepalive_every=15.0, tools=False)
-        self.assertIsInstance(error, httpx.RemoteProtocolError)
-        self.assertEqual(self.names(events), ["response.created"])
+        self.assertIsNone(error)
+        self.assertEqual(self.names(events), ["response.created", "response.failed"])
+
+
+class UnfinishedStreamTests(unittest.TestCase):
+    """Codex says only "stream closed before response.completed" for a stream that just stops."""
+
+    def last(self, chunks, *, then=None, tools=True):
+        events, error = run(chunks, then=then, keepalive_every=15.0, tools=tools)
+        self.assertIsNone(error)
+        self.assertEqual([name for name, _ in events].count("response.failed"), 1)
+        self.assertEqual(events[-1][0], "response.failed")
+        return events[-1][1]["response"]
+
+    def test_a_backend_breaking_off_mid_answer_is_told_to_codex(self):
+        for tools in (True, False):
+            with self.subTest(tools=tools):
+                response = self.last([created(), *message(0, "Half of the answ", "final_answer")[:2]],
+                                     then=cut(), tools=tools)
+                self.assertEqual((response["id"], response["status"]), ("resp_cut", "failed"))
+                # A code Codex does not know: it shows the message and sends the request again.
+                self.assertEqual(response["error"]["code"], "upstream_error")
+                self.assertIn("closed the connection 0 s into the answer", response["error"]["message"])
+                self.assertIn("RemoteProtocolError: peer closed connection", response["error"]["message"])
+
+    def test_what_the_backend_reported_before_breaking_off_reaches_codex(self):
+        # Codex ignores ``error`` events; as response.failed a context window
+        # exceeded makes it compact the conversation.
+        for tools in (True, False):
+            with self.subTest(tools=tools):
+                response = self.last([created(), error_event("context_length_exceeded", TOO_LONG)],
+                                     then=cut(), tools=tools)
+                self.assertEqual(response["error"], {"code": "context_length_exceeded", "message": TOO_LONG})
+
+    def test_the_error_in_the_responses_api_shape_is_read_too(self):
+        chunk = sse("error", {"type": "error", "code": "server_error", "message": "boom", "param": None})
+        self.assertEqual(self.last([created(), chunk], then=cut())["error"],
+                         {"code": "server_error", "message": "boom"})
+
+    def test_the_backends_own_failure_is_passed_on_alone(self):
+        response = self.last([created(), error_event("server_error", "boom"), failed("server_error", "boom")])
+        self.assertEqual(response, {"id": "resp_cut", "status": "failed",
+                                    "error": {"code": "server_error", "message": "boom"}})
+
+    def test_a_stream_that_just_ends_is_told_to_codex(self):
+        response = self.last([created(), *message(0, "Half of the answ", "final_answer")[:2]], tools=False)
+        self.assertEqual(response["error"]["code"], "upstream_error")
+        self.assertIn("ended the answer 0 s in, before finishing it", response["error"]["message"])
+
+    def test_a_stream_that_never_opened_is_told_with_the_bridges_response(self):
+        response = self.last([], then=cut(), tools=False)
+        self.assertEqual(response["id"], "resp_bridge")
+
+    def test_a_failure_of_the_bridge_itself_is_told_and_raised(self):
+        events, error = run([created()], then=ValueError("bug"), keepalive_every=15.0, tools=False)
+        self.assertIsInstance(error, ValueError)
+        self.assertEqual(events[-1][0], "response.failed")
+        self.assertIn("The bridge failed while passing on the answer (ValueError: bug)",
+                      events[-1][1]["response"]["error"]["message"])
 
 
 class BrokenBody(httpx.AsyncByteStream):
@@ -371,6 +442,37 @@ class BridgeCutOffTests(unittest.TestCase):
         events = parse(response.content)
         self.assertEqual(events[-1][0], "response.completed")
         self.assertEqual([name for name, _ in events].count("response.output_item.done"), 1)
+
+    def test_codex_is_told_why_when_upstream_breaks_off(self):
+        cases = {
+            "mid-answer": ([created(), *message(0, "Half of the answ", "final_answer")[:2]], "upstream_error"),
+            "after an error": ([created(), error_event("context_length_exceeded", TOO_LONG)],
+                               "context_length_exceeded"),
+        }
+        for name, (body, code) in cases.items():
+            for tools in (True, False):
+                with self.subTest(name, tools=tools):
+                    def handler(_request, body=body):
+                        return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                                              stream=BrokenBody(body))
+
+                    reader = StaticReader()
+                    reader.store.configure(session_headers(None), persist=False, allow_expired=True)
+                    app = create_app(reader, client_factory=lambda handler=handler: httpx.AsyncClient(
+                        transport=httpx.MockTransport(handler)))
+                    request = {**(SOURCE_BODY if tools else {"model": "gpt-5.6-sol-excel"}),
+                               "input": "draw", "stream": True}
+
+                    async def go(app=app, request=request):
+                        transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 50000))
+                        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8765") as client:
+                            return await client.post("/v1/responses", json=request)
+
+                    response = asyncio.run(go())
+                    self.assertEqual(response.status_code, 200)
+                    events = parse(response.content)
+                    self.assertEqual(events[-1][0], "response.failed")
+                    self.assertEqual(events[-1][1]["response"]["error"]["code"], code)
 
 
 class SlowBody(httpx.AsyncByteStream):

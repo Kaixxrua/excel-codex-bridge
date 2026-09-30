@@ -14,7 +14,8 @@ without ``response.completed`` as broken and retries it with the finished
 items in the history, and the model then tends to repeat them word for word,
 so a stream the upstream cuts off after its last finished item is completed
 here.  And Codex drops a stream it hears nothing from for five minutes, so
-``kept_alive`` fills any silence towards it with ``response.in_progress``.
+``kept_alive`` fills any silence towards it with ``response.in_progress``,
+and ends a stream the backend gives up on with ``response.failed`` saying why.
 """
 
 from __future__ import annotations
@@ -33,6 +34,8 @@ log = logging.getLogger("excel_codex_bridge")
 KEEPALIVE_SECONDS = 15.0
 OPENING_EVENTS = {"response.created", "response.in_progress", "response.queued"}
 _TERMINAL_EVENTS = {"response.completed", "response.failed", "response.incomplete"}
+# An error code Codex does not know: it shows the message and tries again.
+UPSTREAM_ERROR_CODE = "upstream_error"
 
 
 async def _with_ticks(items, wait):
@@ -64,7 +67,7 @@ async def _with_ticks(items, wait):
 
 
 def _event(block: bytes) -> tuple[str, dict | None, bool]:
-    """(the event's type, its response, whether it is whole) for one SSE event's bytes."""
+    """(the event's type, its data, whether it is whole) for one SSE event's bytes."""
     name, data = format_translation.parse_sse_block(block.decode("utf-8", "replace"))
     if data is None:
         return str(name or "").strip().lower(), None, False
@@ -76,9 +79,34 @@ def _event(block: bytes) -> tuple[str, dict | None, bool]:
         return str(name or "").strip().lower(), None, False
     if not isinstance(payload, dict):
         return str(name or "").strip().lower(), None, True
-    response = payload.get("response")
-    kind = str(name or payload.get("type") or "").strip().lower()
-    return kind, response if isinstance(response, dict) else None, True
+    return str(name or payload.get("type") or "").strip().lower(), payload, True
+
+
+def reported_error(payload: dict) -> dict | None:
+    """The error an ``error`` event reports, as ``code`` and ``message``.
+
+    Basispoints nests it (``{"type": "error", "error": {...}}``); the
+    Responses API puts ``code`` and ``message`` beside ``type``.
+    """
+    error = payload.get("error") if isinstance(payload.get("error"), dict) else payload
+    code, message = error.get("code"), error.get("message")
+    if not code and not message:
+        return None
+    return {"code": str(code) if code else UPSTREAM_ERROR_CODE,
+            "message": str(message) if message else f"The Excel backend reported {code}."}
+
+
+def failed_event(response: dict, error: dict) -> bytes:
+    failed = {**response, "status": "failed", "error": error}
+    return format_translation.sse_encode("response.failed", {"type": "response.failed", "response": failed})
+
+
+def _spent(seconds: float) -> str:
+    return f"{seconds / 60:.0f} minutes" if seconds >= 120 else f"{seconds:.0f} s"
+
+
+def _detail(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
 
 
 async def kept_alive(chunks, opening: dict, every: float | None = None):
@@ -92,13 +120,24 @@ async def kept_alive(chunks, opening: dict, every: float | None = None):
     ``opening`` is announced as ``response.created`` instead, and the
     backend's own opening events are then left out, so the client hears the
     stream open once.  After the last event, silence stays silence.
+
+    A stream that stops before its last event (``response.completed``,
+    ``.failed`` or ``.incomplete``), mostly the backend closing the
+    connection mid-answer, ends with ``response.failed`` instead of just
+    stopping: Codex then shows why when it sends the request again.  It
+    carries what the backend reported in an ``error`` event, if it did, as
+    Codex ignores those: a context window exceeded then reaches Codex as
+    such, and it compacts the conversation.
     """
     every = KEEPALIVE_SECONDS if every is None else every
     loop = asyncio.get_running_loop()
-    sent_at = loop.time()
+    started = sent_at = loop.time()
     buffer = b""
     announced = finished = False
     beat: bytes | None = None  # response.in_progress, once the stream has opened
+    told = opening  # the response the client was told of
+    reported: dict | None = None  # the error the backend reported
+    events, last = 0, ""
 
     def until_beat() -> float | None:
         return None if finished else sent_at + every - loop.time()
@@ -107,6 +146,26 @@ async def kept_alive(chunks, opening: dict, every: float | None = None):
         return format_translation.sse_encode(
             "response.in_progress", {"type": "response.in_progress", "response": response}
         )
+
+    def passes(block: bytes) -> bool:
+        """Take note of the event ``block``; False for one to leave out."""
+        nonlocal beat, finished, told, reported, events, last
+        kind, payload, _ = _event(block)
+        response = payload.get("response") if payload is not None else None
+        events += 1
+        last = kind or last
+        if kind in OPENING_EVENTS:
+            if announced:
+                return False
+            told = response if isinstance(response, dict) else opening
+            beat = in_progress(told)
+        elif kind in _TERMINAL_EVENTS:
+            finished = True
+        elif kind == "error" and payload is not None:
+            reported = reported_error(payload) or reported
+            if reported is not None:
+                log.warning("the Excel backend reported an error: %s: %s", reported["code"], reported["message"][:500])
+        return True
 
     cut_off: Exception | None = None
     try:
@@ -130,23 +189,42 @@ async def kept_alive(chunks, opening: dict, every: float | None = None):
             while end != -1:
                 block, buffer = buffer[: end + 2], buffer[end + 2:]
                 end = buffer.find(b"\n\n")
-                kind, response, _ = _event(block)
-                if kind in OPENING_EVENTS:
-                    if announced:
-                        continue
-                    beat = in_progress(response or opening)
-                elif kind in _TERMINAL_EVENTS:
-                    finished = True
-                yield block
-                sent_at = loop.time()
-    except Exception as exc:  # noqa: BLE001 - raised again below
+                if passes(block):
+                    yield block
+                    sent_at = loop.time()
+    except Exception as exc:  # noqa: BLE001 - handled below
         cut_off = exc
     # The connection can break right after an event, before the blank line
     # that ends it: that event is still whole.  A cut-off one is left out, as
     # the client could not read it either.
     if buffer.strip() and _event(buffer)[2]:
-        yield buffer.rstrip(b"\n") + b"\n\n"
-    if cut_off is not None:
+        block = buffer.rstrip(b"\n") + b"\n\n"
+        if passes(block):
+            yield block
+    broke = isinstance(cut_off, httpx.TransportError)
+    if not finished:
+        spent = loop.time() - started
+        if reported is not None:
+            error = reported
+        elif broke:
+            error = {"code": UPSTREAM_ERROR_CODE, "message": (
+                f"The Excel backend closed the connection {_spent(spent)} into the answer, "
+                f"before finishing it ({_detail(cut_off)}).")}
+        elif cut_off is not None:
+            error = {"code": UPSTREAM_ERROR_CODE,
+                     "message": f"The bridge failed while passing on the answer ({_detail(cut_off)})."}
+        else:
+            error = {"code": UPSTREAM_ERROR_CODE,
+                     "message": f"The Excel backend ended the answer {_spent(spent)} in, before finishing it."}
+        log.warning(
+            "the answer stopped after %.1f s and %d events (the last %s) before it was finished%s; "
+            "Codex is told it failed",
+            spent, events, last or "none", f" ({_detail(cut_off)})" if cut_off is not None else "",
+        )
+        yield failed_event(told, error)
+    elif broke:
+        log.debug("the Excel backend closed the connection after the last event (%s)", _detail(cut_off))
+    if cut_off is not None and not broke:
         raise cut_off
 
 

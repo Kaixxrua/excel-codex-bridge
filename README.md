@@ -243,6 +243,13 @@ Codex 连续 5 分钟没收到任何数据，就当作断线重发请求，每�
 升级后还出现，看看桥接窗口是不是被暂停了：在 Windows 的控制台窗口里点一下会进入选择文字状态（标题前出现
 “选择”），这时桥接一写日志就会停住，按 Esc 或回车恢复。
 
+**报 `stream disconnected before completion: stream closed before response.completed`，桥接窗口里是
+`upstream stream ended abnormally: RemoteProtocolError`**：Excel 后端回复到一半断开了连接，有时断开前还用
+Codex 不认的方式报了一个错。0.5.16 及更早版本只让 Codex 看到“流断了”，看不到原因。0.5.17 起桥接把原因转给
+Codex：后端报了错就显示那个错，比如对话超出了模型的上下文窗口，Codex 会提示上下文已满，发下一条消息时先自动
+压缩；后端什么也没说就断开，就显示是回复开始几秒后断开的、怎么断开的，Codex 照常自动重发。同一个对话每次都
+这样断开，桥接窗口里 `the answer stopped after …` 那一行写着断开前收到了什么，反馈时请附上。
+
 **升级后模型菜单还是旧的：只有 5.6-Sol、6-Astra、5.6-Terra、5.6-Luna，没有 6-Sol、6-Luna 和 1M 版**：
 这是 0.5.1 及更早版本的模型列表。桌面版只在启动时读取模型列表，常见原因：
 

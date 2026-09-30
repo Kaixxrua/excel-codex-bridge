@@ -34,7 +34,14 @@ from . import image_generation
 from . import images
 from . import session
 from . import sse
-from .excel_stream import OPENING_EVENTS, excel_tool_stream_transform, kept_alive
+from .excel_stream import (
+    OPENING_EVENTS,
+    UPSTREAM_ERROR_CODE,
+    excel_tool_stream_transform,
+    failed_event,
+    kept_alive,
+    reported_error,
+)
 from .session import SessionReader
 
 log = logging.getLogger("excel_codex_bridge")
@@ -80,8 +87,6 @@ _RECONNECT_ERRORS = (
     httpx.ConnectError, httpx.ConnectTimeout, httpx.ProxyError, httpx.RemoteProtocolError,
     httpx.ReadError, httpx.WriteError, httpx.WriteTimeout,
 )
-# The code of a failure Codex should try again itself, through the ordinary path.
-UPSTREAM_ERROR_CODE = "upstream_error"
 # How much of a stream is read looking for its first event past the opening ones.
 _STREAM_HEAD_LIMIT = 4 * 1024 * 1024
 _TRY_AGAIN = re.compile(r"(?i)try again in\s*(\d+(?:\.\d+)?)\s*(ms|s|seconds?)\b")
@@ -406,7 +411,11 @@ def _stream_event(block: bytes) -> tuple[bool, dict | None, str | None]:
     response = payload.get("response") if isinstance(payload.get("response"), dict) else None
     if kind in OPENING_EVENTS:
         return True, response, None
-    error = response.get("error") if kind == "response.failed" and response is not None else None
+    # Basispoints reports a failure in an ``error`` event, then ``response.failed``.
+    if kind == "error":
+        error = reported_error(payload)
+    else:
+        error = response.get("error") if kind == "response.failed" and response is not None else None
     if isinstance(error, dict) and error.get("code") in RATE_LIMIT_CODES:
         return False, response, str(error.get("message") or error["code"])
     return False, response, None
@@ -422,8 +431,7 @@ def _still_limited(response: dict, message: str, waited: float) -> bytes:
 
 
 def _failed_event(response: dict, code: str, message: str) -> bytes:
-    failed = {**response, "status": "failed", "error": {"code": code, "message": message}}
-    return sse.sse_encode("response.failed", {"type": "response.failed", "response": failed})
+    return failed_event(response, {"code": code, "message": message})
 
 
 def _refused(response: Response) -> bool:
@@ -478,7 +486,8 @@ class _PastRateLimits:
         """With no ``upstream`` yet, ``reconnect`` goes on trying to reach the backend first.
 
         Codex then gets ``opening`` as the response at once, and ``rejected(response)``
-        makes an error answer of the backend into what Codex hears.
+        makes an error answer of the backend into what Codex hears.  ``opening``
+        also stands in for the response of a rate limit reported without one.
         """
         self.upstream = upstream
         self._send = send
@@ -596,6 +605,9 @@ class _PastRateLimits:
                     raise
                 rest = (first or b"") + pending
                 delay = None if limited is None else _rate_limit_delay(limited, attempt, self._wait - waited)
+                if limited is not None and failed is None:
+                    # Said in an ``error`` event, which carries no response.
+                    failed = opened or self._opening or {}
                 if delay is None:
                     if limited is not None and waited > 0:
                         rest = _still_limited(failed, limited, waited) + pending
@@ -845,18 +857,13 @@ class Bridge:
         transform = excel_tool_stream_transform(source_body)
 
         async def relay():
-            source = _PastRateLimits(upstream, send, rate_limit_wait(), reconnect=reconnect,
-                                     opening=opening if upstream is None else None,
+            source = _PastRateLimits(upstream, send, rate_limit_wait(), reconnect=reconnect, opening=opening,
                                      rejected=self._rejected, timeout=self.client.timeout)
+            # A connection the backend breaks ends there: kept_alive tells Codex.
             chunks = kept_alive(transform(source) if transform is not None else source, opening)
             try:
                 async for chunk in chunks:
                     yield chunk
-            except httpx.TransportError as exc:
-                # Basispoints sometimes breaks the connection after the final
-                # event; if it happened earlier the client sees no
-                # response.completed and retries on its own.
-                log.warning("upstream stream ended abnormally: %s", type(exc).__name__)
             finally:
                 await chunks.aclose()
                 await source.aclose()

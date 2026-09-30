@@ -40,6 +40,12 @@ def failed(code: str = "rate_limit_exceeded", message: str = LIMITED, newline: s
         "id": "resp_limited", "status": "failed", "error": {"code": code, "message": message}}}, newline)
 
 
+def error_event(code: str = "rate_limit_exceeded", message: str = LIMITED) -> bytes:
+    """Basispoints says it first, then ``response.failed``."""
+    return sse("error", {"type": "error", "error": {"type": "tokens", "code": code, "message": message,
+                                                     "param": None}, "sequence_number": 2})
+
+
 def stream(body: bytes) -> httpx.Response:
     return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body)
 
@@ -99,6 +105,27 @@ class WaitingTests(unittest.TestCase):
                 self.assertIn("resp_limited", text.split("\n\n")[0])
                 self.assertEqual(names[-1], "response.completed")
                 self.assertIn("pong", text)
+
+    def test_a_rate_limit_said_in_an_error_event_first_is_waited_out_too(self):
+        for opening in (created(), b""):
+            with self.subTest(opened=bool(opening)):
+                upstream = Upstream(opening + error_event() + failed(), text_stream("pong"))
+                text = ask(upstream, tools=False)
+                names = event_names(text)
+                self.assertEqual(len(upstream.requests), 2)
+                self.assertNotIn("response.failed", names)
+                self.assertNotIn("error", names)
+                self.assertEqual(names.count("response.created"), 1)
+                self.assertEqual(events(text)[0]["response"]["status"], "in_progress")
+                self.assertEqual(names[-1], "response.completed")
+
+    def test_a_rate_limit_said_in_an_error_event_that_outlasts_the_wait_is_told_to_codex(self):
+        upstream = Upstream(created() + error_event() + failed())
+        text = ask(upstream, wait="0.05")
+        self.assertGreater(len(upstream.requests), 2)
+        failure = next(e for e in events(text) if e["type"] == "response.failed")
+        self.assertEqual(failure["response"]["error"]["code"], "invalid_prompt")
+        self.assertIn("Please try again in 18ms", failure["response"]["error"]["message"])
 
     def test_once_the_wait_is_used_up_codex_is_told_so_and_not_to_try_again(self):
         upstream = Upstream(created() + failed())

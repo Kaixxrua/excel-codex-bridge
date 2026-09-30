@@ -297,6 +297,16 @@ Codex every 15 seconds that the answer is still going then too; update. If it st
 the bridge window is paused: clicking into a console window on Windows starts selecting text (the title
 starts with "Select"), and the bridge stops at its next log line until Esc or Enter.
 
+**A turn fails with `stream disconnected before completion: stream closed before response.completed`,
+and the bridge window shows `upstream stream ended abnormally: RemoteProtocolError`**: the Excel backend
+closed the connection mid-answer, at times after reporting an error in a way Codex ignores. Up to 0.5.16
+Codex saw only that the stream broke, not why. From 0.5.17 the bridge passes the reason on: an error the
+backend reported shows as such (a conversation past the model's context window, for instance, makes Codex
+say the context is full and compact it before the next message), and a connection closed without a word
+shows how many seconds into the answer and how it closed; Codex sends the request again by itself as
+before. If the same conversation keeps breaking off like this, the bridge window's
+`the answer stopped after …` line says what arrived before; include it when reporting it.
+
 **After an update the model menu is the old one: only 5.6-Sol, 6-Astra, 5.6-Terra and 5.6-Luna,
 without 6-Sol, 6-Luna and the 1M versions**. That is the model list of 0.5.1 and earlier. The
 desktop app reads the model list only when it starts. Common causes:
