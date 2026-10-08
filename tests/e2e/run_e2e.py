@@ -1024,6 +1024,7 @@ def main() -> int:
         CODEX_HOME=str(root / "codex-home"),
         EXCEL_BRIDGE_CODEX_AUTH=str(codex_auth),
         EXCEL_BRIDGE_HOME=str(root / "bridge-home"),
+        EXCEL_BRIDGE_ROUTE="excel",
         GHCP_EXCEL_RESPONSES_URL=f"http://127.0.0.1:{gate.port if gate else port}/basispoints/api/responses",
         EXCEL_BRIDGE_TIMEZONE="auto",
         EXCEL_BRIDGE_TIMEZONE_LOOKUP=f"http://127.0.0.1:{port}/geo/{{ip}}",

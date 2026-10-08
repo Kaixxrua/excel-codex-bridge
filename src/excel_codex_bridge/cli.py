@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import datetime as _dt
 import json
 import logging
@@ -23,6 +24,7 @@ from . import __version__, codex_config, desktop_config, excel_signin, excel_ups
 from . import image_generation
 from . import self_update
 from . import session
+from . import upstream_routes
 from .session import SessionReader
 
 
@@ -63,9 +65,14 @@ def _describe_session(status: dict) -> tuple[bool, str]:
 
 def _reader(args, *, login: str | None = None) -> SessionReader:
     webview_dir = getattr(args, "webview_dir", None)
+    requested_login = login or getattr(args, "login", None)
+    if upstream_routes.selected(args) == "codex" and login is None:
+        if requested_login == "excel":
+            raise ValueError("--route codex uses --login codex; select --route excel for an Excel session.")
+        requested_login = "codex"
     return SessionReader(
         webview_root=Path(webview_dir).expanduser() if webview_dir else None,
-        login=login or getattr(args, "login", None),
+        login=requested_login,
     )
 
 
@@ -83,6 +90,32 @@ def _write_catalog(directory: Path | None = None) -> Path:
     return codex_config.write_catalog(directory)
 
 
+def _route_catalog(args, reader: SessionReader, directory: Path | None = None) -> Path:
+    if upstream_routes.selected(args) == "excel":
+        return _write_catalog(directory)
+    from .native_upstream import CATALOG_NAME, NativeBridge, RouteError
+    from .server import build_upstream_client
+
+    async def fetch():
+        bridge = NativeBridge(reader, build_upstream_client)
+        try:
+            return await bridge.catalog()
+        finally:
+            await bridge.aclose()
+
+    payload = asyncio.run(fetch())
+    model = getattr(args, "model", None)
+    if model is not None and model not in {m["slug"] for m in payload["models"]}:
+        raise RouteError(f"Model {model!r} is not in this account's Codex catalog. Excel aliases and their context limits require --route excel.")
+    return codex_config.write_catalog(directory, payload=payload, name=CATALOG_NAME)
+
+
+def _route_notice(args) -> None:
+    route = upstream_routes.selected(args)
+    endpoint = "chatgpt.com/backend-api/codex" if route == "codex" else "bps.openai.com"
+    _print(f"Upstream route: {route} ({endpoint}); fixed for this process.")
+
+
 def _refresh_catalog() -> None:
     try:
         _write_catalog()
@@ -97,7 +130,9 @@ def _image_model(value: str) -> str:
     return value
 
 
-def _pictures_line() -> str:
+def _pictures_line(args=None) -> str:
+    if args is not None and upstream_routes.selected(args) == "codex":
+        return "Native Codex tools and image inputs are forwarded unchanged. Standalone image generation is unavailable on this HTTP adapter."
     try:
         drawing = f"draws with {image_generation.model()} (--image-model picks another)."
     except image_generation.Refused as exc:
@@ -166,7 +201,8 @@ def cmd_update(args) -> int:
 # ─── automatic sign-in through Excel ──────────────────────────────────────────
 
 def _signin(reader: SessionReader, args) -> excel_signin.ExcelSignIn:
-    return excel_signin.ExcelSignIn(reader, enabled=False if getattr(args, "no_auto_signin", False) else None)
+    disabled = upstream_routes.selected(args) == "codex" or getattr(args, "no_auto_signin", False)
+    return excel_signin.ExcelSignIn(reader, enabled=False if disabled else None)
 
 
 def _sign_in_now(signin: excel_signin.ExcelSignIn, status: dict) -> bool:
@@ -242,10 +278,14 @@ def cmd_serve(args) -> int:
     reader = _reader(args)
     if not args.log_file:
         # A config from `print-config` points at this file; keep its model list this release's.
-        _refresh_catalog()
+        if upstream_routes.selected(args) == "codex":
+            _route_catalog(args, reader)
+        else:
+            _refresh_catalog()
+        _route_notice(args)
         _, message = _describe_session(reader.refresh(force=True))
         _print(message)
-        _print(_pictures_line())
+        _print(_pictures_line(args))
         _print(f"Listening on {codex_config.base_url(args.port)}  (Ctrl+C to stop)")
         _watch_for_updates()
     _run_bridge(reader, args, host=args.host, port=args.port, quiet=bool(args.log_file))
@@ -275,12 +315,13 @@ def _run_bridge(reader: SessionReader, args, *, host: str, port: int, quiet: boo
 
     from .server import create_app
 
-    _keep_native_calls()
+    if upstream_routes.selected(args) == "excel":
+        _keep_native_calls()
     keeper = excel_signin.SessionKeeper(_signin(reader, args))
     keeper.start()
     try:
         config = uvicorn.Config(
-            create_app(reader),
+            create_app(reader, route=upstream_routes.selected(args)),
             host=host,
             port=port,
             log_level="warning",
@@ -314,12 +355,37 @@ def _run_bridge(reader: SessionReader, args, *, host: str, port: int, quiet: boo
 # ─── status / print-config ────────────────────────────────────────────────────
 
 def cmd_status(args) -> int:
+    _route_notice(args)
     ok, message = _describe_session(_reader(args).refresh(force=True))
     _print(message)
+    if upstream_routes.selected(args) == "codex":
+        _print("Login status is not an inference check. Run `excel-codex check-route` to verify a tool call and its continuation (at most 2 requests).")
     return 0 if ok else 1
 
 
+def cmd_check_route(args) -> int:
+    if upstream_routes.selected(args) != "codex":
+        raise ValueError("This check validates native Codex. Use --route codex; legacy Excel retries are not a controlled channel comparison.")
+    from . import route_check
+    from .server import build_upstream_client
+    import uuid
+
+    _apply_proxy(args)
+    receipt = codex_config.state_dir() / "route-checks" / (uuid.uuid4().hex + ".json")
+    _print(f"Checking native tool calling and continuation: at most 2 inference requests. Receipt: {receipt}")
+    report = asyncio.run(route_check.run(_reader(args), build_upstream_client, model=args.model,
+                                        effort=args.effort, receipt=receipt))
+    _print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report["protocol_verified"] else 1
+
+
 def cmd_login(args) -> int:
+    if upstream_routes.selected(args) == "codex":
+        codex = _find_codex(None)
+        if codex is None:
+            _print("Codex CLI was not found. Install Codex, then run codex login.")
+            return 127
+        return subprocess.call([codex, "login"], env=_codex_env(os.environ.copy()))
     reader = _reader(args, login="excel")
     status = reader.refresh(force=True)
     ok, message = _describe_session(status)
@@ -335,12 +401,14 @@ def cmd_login(args) -> int:
 
 
 def cmd_print_config(args) -> int:
-    catalog = _write_catalog()
+    _apply_proxy(args)
+    catalog = _route_catalog(args, _reader(args))
     _print(
         "# Put the three top-level keys ABOVE the first [table] of ~/.codex/config.toml,\n"
         "# and the [model_providers.excel-bridge] table anywhere below.\n"
     )
-    _print(codex_config.config_snippet(args.port, catalog, args.model))
+    _print(codex_config.config_snippet(args.port, catalog, args.model,
+                                      excel=upstream_routes.selected(args) == "excel"))
     return 0
 
 
@@ -432,13 +500,14 @@ def cmd_codex(args, codex_args: list[str]) -> int:
     home.mkdir(parents=True, exist_ok=True)
     check = _update_check()
     update = updates.in_background(check) if check is not None else None
-    catalog = _write_catalog(home)
+    catalog = _route_catalog(args, reader, home)
     log_file = home / "bridge.log"
     port = args.port or _free_port()
 
     serve_cmd = [
         *([sys.executable] if _frozen() else [sys.executable, "-m", "excel_codex_bridge"]),
         "serve", "--port", str(port), "--log-file", str(log_file), "--exit-with-stdin",
+        "--route", upstream_routes.selected(args),
     ]
     if args.webview_dir:
         serve_cmd += ["--webview-dir", args.webview_dir]
@@ -463,11 +532,13 @@ def cmd_codex(args, codex_args: list[str]) -> int:
         shared = codex_config.codex_signed_in()
         if shared:
             _move_bridge_threads(desktop_config.codex_home())
-        _print(_pictures_line())
+        _route_notice(args)
+        _print(_pictures_line(args))
         _print(f"Bridge ready on {codex_config.base_url(port)} (log: {log_file}). Starting Codex...")
 
         command = codex_config.codex_command(
-            codex, codex_config.codex_overrides(port, catalog, args.model, shared=shared), codex_args
+            codex, codex_config.codex_overrides(port, catalog, args.model, shared=shared,
+                                               excel=upstream_routes.selected(args) == "excel"), codex_args
         )
         previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
         try:
@@ -670,12 +741,13 @@ def cmd_desktop(args) -> int:
             "  -> Close it, or pass --port."
         )
         return 1
-    catalog = _write_catalog()
+    catalog = _route_catalog(args, reader)
     shared = codex_config.codex_signed_in(desktop_config.codex_home())
     try:
         backup = desktop_config.enable_file(
             config, port=args.port, catalog=catalog, model=args.model, shared=shared,
-            quiet_features=not args.keep_apps,
+            quiet_features=not args.keep_apps and upstream_routes.selected(args) == "excel",
+            excel=upstream_routes.selected(args) == "excel",
         )
     except (desktop_config.ConfigError, OSError, UnicodeError) as exc:
         _print(f"Could not update {config}: {exc}")
@@ -695,9 +767,10 @@ def cmd_desktop(args) -> int:
 
     _print(f"Codex desktop app and IDE extension now use the Excel bridge {__version__} "
            f"({codex_config.codex_model(args.model)}).")
+    _route_notice(args)
     _print(f"  Updated {config}" + (f"; the original is saved as {backup.name}" if backup else ""))
     text = config.read_text(encoding="utf-8-sig")
-    if not args.keep_apps:
+    if not args.keep_apps and upstream_routes.selected(args) == "excel":
         _print(_APPS_OFF if desktop_config.features_quiet(text) else _APPS_LEFT_ON)
     profile = desktop_config.profile_override(text)
     if profile:
@@ -712,10 +785,11 @@ def cmd_desktop(args) -> int:
     else:
         _print("  Keep this window open; closing it or pressing Ctrl+C puts your config back.")
     _print(_QUIT_WHEN_DONE)
-    _print(_pictures_line())
+    _print(_pictures_line(args))
     _print(f"Listening on {codex_config.base_url(args.port)}")
     _watch_for_updates()
-    timezone.extend(filter(None, [_keep_windows_timezone()]))
+    if upstream_routes.selected(args) == "excel":
+        timezone.extend(filter(None, [_keep_windows_timezone()]))
     try:
         _run_bridge(reader, args, host="127.0.0.1", port=args.port, quiet=False)
     except KeyboardInterrupt:
@@ -1117,9 +1191,11 @@ def cmd_threads(args) -> int:
 
 def _parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--route", choices=upstream_routes.CHOICES, default=upstream_routes.default(),
+                        help="upstream: codex (default, native HTTP) or excel (legacy BPS); never silently switches routes")
     common.add_argument(
         "--proxy",
-        help="upstream proxy for bps.openai.com, e.g. http://127.0.0.1:7890 "
+        help="upstream proxy, e.g. http://127.0.0.1:7890 "
         "(default: HTTPS_PROXY / system proxy)",
     )
     common.add_argument(
@@ -1129,13 +1205,13 @@ def _parser() -> argparse.ArgumentParser:
     common.add_argument(
         "--login",
         choices=session.LOGINS,
-        help="which ChatGPT sign-in to use: auto (Codex's, else the Excel add-in's; the default), "
-        f"codex or excel (default: ${session.LOGIN_ENV} or auto)",
+        help="ChatGPT sign-in: the native route requires codex; the Excel route accepts auto, codex or excel "
+        f"(Excel route default: ${session.LOGIN_ENV} or auto)",
     )
     common.add_argument(
         "--timezone",
         choices=exit_timezone.MODES,
-        help="the timezone and date Codex's requests through the bridge carry: auto (the proxy exit's, "
+        help="Excel route only: the timezone and date Codex's requests carry: auto (the proxy exit's, "
         f"looked up from its IP; the default) or off (this computer's) (default: ${exit_timezone.MODE_ENV} or auto)",
     )
 
@@ -1143,20 +1219,20 @@ def _parser() -> argparse.ArgumentParser:
     auto.add_argument(
         "--no-auto-signin",
         action="store_true",
-        help="never open Excel to sign in or refresh the session (Windows)",
+        help="Excel route only: never open Excel to sign in or refresh the session (Windows)",
     )
 
     drawing = argparse.ArgumentParser(add_help=False)
     drawing.add_argument(
         "--image-model",
         type=_image_model,
-        help=f"the image model Codex's image tool asks the backend for (default: ${image_generation.MODEL_ENV} "
+        help=f"Excel route only: the image model requested by Codex's image tool (default: ${image_generation.MODEL_ENV} "
         f"or {image_generation.MODEL}, the add-in's)",
     )
 
     parser = argparse.ArgumentParser(
         prog="excel-codex",
-        description="Run Codex through the ChatGPT Excel add-in's backend on your own ChatGPT sign-in, locally.",
+        description="Run Codex locally through an explicit native Codex or legacy Excel route using your own ChatGPT sign-in.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command")
@@ -1166,7 +1242,7 @@ def _parser() -> argparse.ArgumentParser:
         parents=[common, auto, drawing],
         help="start the bridge and Codex together (default); extra args go to Codex",
     )
-    codex.add_argument("--model", default=codex_config.DEFAULT_MODEL, help="Excel model alias")
+    codex.add_argument("--model", default=codex_config.DEFAULT_MODEL, help="model from the selected route's catalog")
     codex.add_argument("--port", type=int, default=0, help="bridge port (default: a free port)")
     codex.add_argument("--codex", help="path to the Codex executable")
     codex.add_argument(
@@ -1178,7 +1254,7 @@ def _parser() -> argparse.ArgumentParser:
         parents=[common, auto, drawing],
         help="route the Codex desktop app / IDE extension through the bridge while this runs",
     )
-    desktop.add_argument("--model", default=codex_config.DEFAULT_MODEL, help="Excel model alias")
+    desktop.add_argument("--model", default=codex_config.DEFAULT_MODEL, help="model from the selected route's catalog")
     desktop.add_argument("--port", type=int, default=codex_config.DEFAULT_PORT)
     desktop.add_argument("--off", action="store_true", help="only put the Codex config back, then exit")
     desktop.add_argument(
@@ -1206,13 +1282,17 @@ def _parser() -> argparse.ArgumentParser:
         "by hand), its own conversations into Codex's list, the Windows timezone back",
     )
     sub.add_parser("status", parents=[common], help="show which ChatGPT sign-in the bridge would use")
+    check = sub.add_parser("check-route", parents=[common],
+                           help="verify native Codex tool calling and continuation (at most 2 inference requests)")
+    check.add_argument("--model", default=codex_config.DEFAULT_MODEL)
+    check.add_argument("--effort", choices=("low", "medium", "high", "xhigh", "max"), default="low")
 
     login = sub.add_parser(
-        "login", parents=[common, auto], help="open Excel's ChatGPT pane to sign in or refresh (Windows)"
+        "login", parents=[common, auto], help="sign in with Codex, or open Excel's ChatGPT pane with --route excel"
     )
     login.add_argument("--force", action="store_true", help="open the pane even if the session is fine")
 
-    config = sub.add_parser("print-config", help="print a config.toml snippet for `serve` mode")
+    config = sub.add_parser("print-config", parents=[common], help="print a config.toml snippet for `serve` mode")
     config.add_argument("--port", type=int, default=codex_config.DEFAULT_PORT)
     config.add_argument("--model", default=codex_config.DEFAULT_MODEL)
     timezone = sub.add_parser("timezone", help="show the proxy exit's timezone and how Codex is kept on it")
@@ -1258,6 +1338,14 @@ def _started_by_double_click() -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _entry(argv)
+    except ValueError as exc:
+        _print(str(exc))
+        return 2
+
+
+def _entry(argv: list[str] | None = None) -> int:
     if argv is None and _started_by_double_click():
         # Explorer starts us in the install folder; keep Codex out of it, and
         # keep the window open long enough to read an error or an update notice.
@@ -1278,7 +1366,7 @@ def _main(argv: list[str]) -> int:
     if argv and argv[0] == "sub2api":
         from .sub2api_cli import main as sub2api_main
         return sub2api_main(argv[1:])
-    known = {"codex", "desktop", "restore", "serve", "status", "login", "print-config", "timezone", "threads",
+    known = {"codex", "desktop", "restore", "serve", "status", "check-route", "login", "print-config", "timezone", "threads",
              "update", "-h", "--help", "--version"}
     if not argv or argv[0] not in known:
         argv = ["codex", *argv]
@@ -1291,6 +1379,8 @@ def _main(argv: list[str]) -> int:
         return cmd_serve(args)
     if args.command == "status":
         return cmd_status(args)
+    if args.command == "check-route":
+        return cmd_check_route(args)
     if args.command == "login":
         return cmd_login(args)
     if args.command == "desktop":

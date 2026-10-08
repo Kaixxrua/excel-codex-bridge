@@ -4,6 +4,54 @@
 
 > **非官方项目**，与 OpenAI、Microsoft 无任何关联，也未获其认可。使用前请先读[风险与免责声明](#风险与免责声明)。
 
+## 0.6：默认原生 Codex，显式选择渠道
+
+默认上游已改为 **Codex HTTP**，使用 `codex login` 保存的本机 ChatGPT 登录。Excel/BPS 保留为
+`--route excel` 兼容模式。服务启动后固定渠道；原生请求失败不会自动改走 BPS、换账号、降低推理强度或
+删掉图片、工具及加密历史重试。模型目录采用所选账号返回的原生目录，包括提示词、工具能力、推理档位和上下文限制。
+
+```text
+Codex CLI / 桌面版 → 本机桥接 → Codex HTTP（默认）
+                            → Excel/BPS（显式 --route excel）
+```
+
+```sh
+codex login
+excel-codex status                       # 登录与渠道状态，不发推理请求
+excel-codex check-route                  # 最多 2 次推理，检查工具调用及续轮
+excel-codex                             # 默认原生 Codex
+excel-codex desktop                     # 桌面版，关闭窗口后恢复原配置
+excel-codex serve --route codex          # 只运行原生 HTTP 桥接
+excel-codex --route excel               # 显式使用旧 Excel/BPS 适配
+excel-codex login --route excel         # 旧的 Excel 登录面板
+```
+
+`EXCEL_BRIDGE_ROUTE=codex|excel` 可设置默认渠道，命令行 `--route` 优先。原生路径需要 Codex 的
+ChatGPT 登录，不接受 `--login excel`。桥接只读取凭据，不替 Codex 刷新它；到期时重新 `codex login`。
+双击原有启动器也使用新的默认渠道。升级后完全退出并重新打开 Codex，并为新渠道开始新对话；旧 BPS
+会话里的加密历史可能无法跨后端使用，原生路径不会删除这些历史来假装续接成功。
+
+`check-route` 目前验收原生 Codex：先调用一个只返回随机值的本地测试工具，再检查模型能否正确使用工具结果。
+它不会执行 shell、读取项目文件或比较模型智力。每次运行先记账再提交，最多两次；失败即停止。
+结果保存在状态目录的 `route-checks/*.json`，只含账号指纹、实际渠道、请求次数、终态、模型、档位和耗时，
+不保存 token、题目、回复或加密推理。模型目录可读、登录有效和 `/healthz` 正常都不等于推理已通过；
+检查成功也只证明本次工具协议可用。每次重新运行检查会产生新的推理用量。
+这些次数上限仅适用于 `check-route`；正常使用时，Codex 或 SUB2API 自身发起的重试属于新的请求。
+
+原生适配支持原生工具、完整历史、流式与非流式 Responses，以及图片输入。HTTP 模式要求完整 `input`，
+不支持 `previous_response_id`、服务端会话或 `store:true`；独立图片生成接口返回明确的“不支持”。
+不会把旧的 `*-1m-excel` 模型别名或 BPS 的上下文上限套用到原生模型。响应头 `X-Excel-Bridge-Route`
+报告实际渠道；原生日志记录请求 ID、模型和完成/失败状态。单个服务进程内，同一 `prompt_cache_key`
+切换账号会被拒绝；切换账号或渠道后应新开对话。
+
+SUB2API 也可选原生渠道：见 [部署说明](docs/sub2api.md)。SIWC 和 WebSocket 尚未接入本版本，
+没有“满血恢复”或自动找到更强渠道的承诺。
+
+## Excel/BPS 兼容模式
+
+**下文的 Excel 登录回退、工具转换、生图、长上下文和重试说明仅适用于 `--route excel`。**
+原有命令示例使用这一模式时，请增加 `--route excel`，或先设置 `EXCEL_BRIDGE_ROUTE=excel`。
+
 > **新增可选：SUB2API 插件。** 将 Excel 会话作为独立上游接入你自己的 SUB2API，
 > 无需修改 SUB2API 源码，见 [Docker 部署与 SSH 会话同步](docs/sub2api.md)。
 > 此模式会在你显式运行同步命令后，把会话送到你指定的可信服务器；

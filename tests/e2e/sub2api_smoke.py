@@ -17,7 +17,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[2]
 API_KEY = "smoke-only-api-" + "a" * 48
 ADMIN_KEY = "smoke-only-admin-" + "b" * 48
-SESSION = json.dumps({"headers": {
+SESSION = json.dumps({"source": "codex", "headers": {
     "authorization": "Bearer synthetic-smoke-session-not-a-real-credential",
     "chatgpt-account-id": "synthetic-smoke-account",
 }})
@@ -45,9 +45,10 @@ def wait(container):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", required=True)
+    parser.add_argument("--route", choices=("codex", "excel"), default="codex")
     args = parser.parse_args()
     name = "excel-sub2api-smoke-" + uuid.uuid4().hex[:12]
-    env = {**os.environ, "SUB2API_NETWORK": name, "EXCEL_BRIDGE_PROXY": ""}
+    env = {**os.environ, "SUB2API_NETWORK": name, "EXCEL_BRIDGE_PROXY": "", "EXCEL_BRIDGE_ROUTE": args.route}
     with tempfile.TemporaryDirectory(prefix=name) as temp:
         directory = Path(temp)
         for filename, key in (("api-key", API_KEY), ("admin-key", ADMIN_KEY)):
@@ -83,12 +84,20 @@ with httpx.Client(base_url="http://excel-sub2api:8000", trust_env=False, timeout
     admin = {{"authorization": "Bearer {ADMIN_KEY}", "x-forwarded-for": "127.0.0.1"}}
     assert c.get("/healthz").json() == {{"ok": True}}
     assert c.get("/v1/models").status_code == 401
-    models = c.get("/v1/models", headers=api).json()["data"]
-    assert models and all(m["id"].endswith("-excel") for m in models)
+    listed = c.get("/v1/models", headers=api)
+    if {args.route!r} == "codex":
+        assert listed.status_code == 401  # No session: do not contact OpenAI.
+        model = "gpt-5.6-sol"
+    else:
+        models = listed.json()["data"]
+        assert models and all(m["id"].endswith("-excel") for m in models)
+        model = models[0]["id"]
     assert c.get("/admin/session", headers=admin).status_code == 404
     assert c.post("/admin/session", headers=admin, json={{}}).status_code == 404
     assert c.get("/models", headers={{**api, "origin": "https://example.com"}}).status_code == 403
-    assert c.post("/v1/responses", headers=api, json={{"model":models[0]["id"],"input":"no session"}}).status_code == 401
+    response = c.post("/v1/responses", headers=api, json={{"model":model,"input":"no session"}})
+    assert response.status_code == 401
+    assert response.headers["x-excel-bridge-route"] == {args.route!r}
 print("PASS: cross-container API authentication, Origin denial, admin isolation and forwarded-header defense")
 '''
             print(run("docker", "run", "--rm", "-i", "--network", name, args.image,
@@ -110,7 +119,7 @@ print("PASS: cross-container API authentication, Origin denial, admin isolation 
         finally:
             run(*compose, "down", "--timeout", "5", env=env, check=False)
             run("docker", "network", "rm", name, check=False)
-    print("SUB2API Docker smoke checks passed (no real credentials or upstream inference).")
+    print(f"SUB2API Docker smoke checks passed for {args.route} (no real credentials or upstream inference).")
 
 
 if __name__ == "__main__":

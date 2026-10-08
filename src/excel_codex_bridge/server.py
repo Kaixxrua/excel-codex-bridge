@@ -1,8 +1,8 @@
-"""Local, single-user Responses endpoint backed by the ChatGPT Excel add-in.
+"""Local, single-user Responses endpoint with an explicit Codex or Excel route.
 
 Only loopback clients are served, browser-originated requests are refused
-(DNS-rebinding / drive-by protection), and only the Excel model aliases are
-routed.  The bridge adds no credentials of its own: it forwards a ChatGPT
+(DNS-rebinding / drive-by protection). The selected route controls model and
+tool semantics. The bridge adds no credentials of its own: it forwards a ChatGPT
 sign-in already on this machine, Codex's own or the one the Excel add-in
 cached (see ``session``).
 """
@@ -964,9 +964,10 @@ class Bridge:
         return JSONResponse(content=translated)
 
 
-def create_app(reader: SessionReader | None = None, *, client_factory=build_upstream_client):
+def create_app(reader: SessionReader | None = None, *, client_factory=build_upstream_client, route="excel"):
     """Build the ASGI app (wrapped in the loopback guard)."""
-    bridge = Bridge(reader or SessionReader(), client_factory)
+    from .upstream_routes import create_bridge
+    bridge = create_bridge(reader or SessionReader(login="codex" if route == "codex" else None), client_factory, route)
 
     @contextlib.asynccontextmanager
     async def lifespan(_app):
@@ -984,11 +985,13 @@ def create_app(reader: SessionReader | None = None, *, client_factory=build_upst
 
     @app.get("/healthz")
     async def healthz():
-        return {"ok": True, "session": bridge.reader.refresh()}
+        return {"ok": True, "route": route, "inference_verified": False, "session": bridge.reader.refresh()}
 
     @app.get("/v1/models")
     @app.get("/models")
     async def models():
+        if route == "codex":
+            return await bridge.models()
         return {
             "object": "list",
             "data": [
@@ -1016,7 +1019,9 @@ def create_app(reader: SessionReader | None = None, *, client_factory=build_upst
     @app.post("/responses")
     async def responses(request: Request):
         body = await json_body(request)
-        return body if isinstance(body, Response) else await bridge.responses(body)
+        result = body if isinstance(body, Response) else await bridge.responses(body)
+        result.headers["X-Excel-Bridge-Route"] = route
+        return result
 
     @app.post("/v1/images/{operation}")
     @app.post("/images/{operation}")

@@ -186,11 +186,11 @@ def catalog_payload() -> dict[str, object]:
     return {"models": models}
 
 
-def write_catalog(directory: Path | None = None) -> Path:
+def write_catalog(directory: Path | None = None, *, payload: dict | None = None, name: str = CATALOG_NAME) -> Path:
     directory = directory or state_dir()
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / CATALOG_NAME
-    content = json.dumps(catalog_payload(), indent=2, ensure_ascii=False) + "\n"
+    path = directory / name
+    content = json.dumps(catalog_payload() if payload is None else payload, indent=2, ensure_ascii=False) + "\n"
     fd, tmp = tempfile.mkstemp(dir=directory, prefix=".catalog-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
@@ -246,7 +246,7 @@ def provider_for(shared: bool) -> str:
     return OPENAI_PROVIDER_ID if shared else PROVIDER_ID
 
 
-def codex_overrides(port: int, catalog: Path, model: str = DEFAULT_MODEL, *, shared: bool = False) -> list[str]:
+def codex_overrides(port: int, catalog: Path, model: str = DEFAULT_MODEL, *, shared: bool = False, excel: bool = True) -> list[str]:
     """``-c`` arguments that route one Codex session through the bridge.
 
     ``shared`` points Codex's own ``openai`` provider at the bridge; the
@@ -260,7 +260,7 @@ def codex_overrides(port: int, catalog: Path, model: str = DEFAULT_MODEL, *, sha
         (f"{prefix}.name", _toml_string(PROVIDER_NAME)),
         (f"{prefix}.base_url", _toml_string(base_url(port))),
         (f"{prefix}.wire_api", _toml_string("responses")),
-        (f"{prefix}.http_headers", http_headers()),
+        (f"{prefix}.http_headers", http_headers() if excel else "{}"),
         ("model_catalog_json", _toml_string(str(catalog))),
         ("model", _toml_string(codex_model(model))),
     ]
@@ -281,7 +281,7 @@ def codex_command(codex: str, overrides: list[str], user_args: list[str]) -> lis
     return [codex, *overrides, *user_args]
 
 
-def config_snippet(port: int, catalog: Path, model: str = DEFAULT_MODEL) -> str:
+def config_snippet(port: int, catalog: Path, model: str = DEFAULT_MODEL, *, excel: bool = True) -> str:
     """config.toml text for clients that cannot take ``-c`` (IDE/desktop app)."""
     return (
         "# excel-codex-bridge: keep `excel-codex serve` running while using this\n"
@@ -293,5 +293,5 @@ def config_snippet(port: int, catalog: Path, model: str = DEFAULT_MODEL) -> str:
         f"name = {_toml_string(PROVIDER_NAME)}\n"
         f"base_url = {_toml_string(base_url(port))}\n"
         'wire_api = "responses"\n'
-        f"http_headers = {http_headers()}\n"
+        f"http_headers = {http_headers() if excel else '{}'}\n"
     )

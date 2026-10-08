@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "excel-codex-bridge"
 dynamic = ["version"]
-description = "Run Codex on your own ChatGPT Excel add-in session, locally."
+description = "Run Codex through an explicit native or legacy Excel route on your own ChatGPT login."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Unlicense" }

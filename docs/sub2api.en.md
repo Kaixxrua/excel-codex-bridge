@@ -2,11 +2,24 @@
 
 [简体中文 / complete setup guide](sub2api.md)
 
+## Native route in 0.6
+
+Compose and `excel-sub2api serve` now default to `EXCEL_BRIDGE_ROUTE=codex`. Select `--route excel`
+or set `EXCEL_BRIDGE_ROUTE=excel` in Compose's `.env` for legacy BPS mode.
+
+Native mode connects SUB2API to `chatgpt.com/backend-api/codex/responses`. Use the current client to
+`push-session --login codex`; native mode rejects Excel sessions and old imports without a source.
+Only explicit SSH sync transfers credentials. The server does not scan local credentials, sign in or
+refresh tokens. Use native names returned by `/v1/models`, without `-excel`, and enable OpenAI passthrough
+in SUB2API. Catalog requests require an imported session; health checks only establish liveness.
+No sidecar inference retries or route fallback occur; SUB2API's own retries must be counted separately.
+Start a new conversation after switching routes. The Excel-specific behavior below applies to legacy mode.
+
 This is a private OpenAI-compatible upstream, **not** a SUB2API core patch or an Office add-in.
-The existing local bridge and its defaults remain unchanged.
+Its API and admin keys and explicit session-transfer boundary remain unchanged.
 
 ```text
-Responses client -> SUB2API -> excel-sub2api:8000 -> bps.openai.com
+Responses client -> SUB2API -> excel-sub2api:8000 -> selected Codex / Excel upstream
                                      ^
 Your computer (Codex or Excel sign-in) -> SSH -> docker exec -> loopback admin API -> memory
 ```
@@ -51,7 +64,7 @@ Add an **OpenAI / API Key** account in SUB2API:
 - Base URL: `http://excel-sub2api:8000/v1`.
 - API key: contents of `packaging/sub2api/secrets/api-key`, not the admin key.
 - Enable OpenAI passthrough (`extra.openai_passthrough: true`).
-- Use the Excel aliases returned by `/v1/models`; preserve identity model mapping.
+- Use the models returned by `/v1/models`; preserve identity model mapping. Only Excel mode uses `-excel` aliases.
 - Keep concurrency, group permissions and quotas in SUB2API. Clients use SUB2API-issued keys.
 
 If your SUB2API version blocks private upstream addresses, narrowly allow this host/port
@@ -59,17 +72,17 @@ according to that version's documentation. Do **not** disable SSRF protection gl
 
 ## Sync the session (Codex or Excel sign-in)
 
-Have one ChatGPT sign-in ready locally: either `codex login` (Codex's own, no Excel), or sign in
-through Excel's ChatGPT pane. Verify your SSH host fingerprint interactively first. Then use the
+Run `codex login` locally for the default native route. The legacy Excel route can also use
+Excel's ChatGPT pane. Verify your SSH host fingerprint interactively first. Then use the
 installed Python entrypoint, or `excel-codex.exe sub2api ...` / `excel-codex.cmd sub2api ...` from
 the existing distribution:
 
 ```sh
-excel-sub2api push-session --ssh operator@your-vps
-# On a machine without Excel (a server), send Codex's sign-in explicitly:
 excel-sub2api push-session --ssh operator@your-vps --login codex
 # For Docker via non-interactive sudo, resync every minute until Ctrl+C:
-excel-sub2api push-session --ssh operator@your-vps --sudo --watch 60
+excel-sub2api push-session --ssh operator@your-vps --login codex --sudo --watch 60
+# Only when the server explicitly uses --route excel:
+excel-sub2api push-session --ssh operator@your-vps --login excel
 ```
 
 `--login auto` (default) sends Codex's sign-in, else the Excel add-in's; `--login codex` / `excel`
@@ -108,4 +121,5 @@ For repeatable container checks (automatically cleaned-up isolated network/conta
 ```sh
 docker build -f packaging/sub2api/Dockerfile -t excel-sub2api:test .
 python tests/e2e/sub2api_smoke.py --image excel-sub2api:test
+python tests/e2e/sub2api_smoke.py --image excel-sub2api:test --route excel
 ```

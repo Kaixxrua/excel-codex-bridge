@@ -41,6 +41,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: docker build -f packaging/sub2api/Dockerfile -t excel-sub2api:test .
       - run: python tests/e2e/sub2api_smoke.py --image excel-sub2api:test
+      - run: python tests/e2e/sub2api_smoke.py --image excel-sub2api:test --route excel
 
   e2e-linux:
     needs: test
