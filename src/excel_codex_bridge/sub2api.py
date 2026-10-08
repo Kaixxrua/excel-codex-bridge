@@ -1,4 +1,4 @@
-"""Opt-in, single-account Excel upstream for a private SUB2API network.
+"""Opt-in, single-account Codex or Excel upstream for a private SUB2API network.
 
 The ordinary local bridge is deliberately unchanged. This sidecar requires
 separate data/control-plane keys; session administration additionally requires
@@ -21,7 +21,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from . import excel_upstream, images, sse
-from .server import Bridge, build_upstream_client
+from .server import build_upstream_client
+from .upstream_routes import create_bridge
 from .session import SessionReader
 
 SESSION_PATH = "/admin/session"
@@ -175,9 +176,9 @@ async def read_json(request: Request, limit: int) -> dict:
     return decode_json(bytes(raw), request.headers.get("content-encoding", ""), limit)
 
 
-def create_app(keys: GatewayKeys, *, client_factory=build_upstream_client):
+def create_app(keys: GatewayKeys, *, client_factory=build_upstream_client, route="excel"):
     reader = PushedSessionReader()
-    bridge = Bridge(reader, client_factory)
+    bridge = create_bridge(reader, client_factory, route)
 
     @contextlib.asynccontextmanager
     async def lifespan(_app):
@@ -199,6 +200,8 @@ def create_app(keys: GatewayKeys, *, client_factory=build_upstream_client):
     @app.get("/v1/models")
     @app.get("/models")
     async def models():
+        if route != "excel":
+            return await bridge.models()
         return {"object": "list", "data": [
             {"id": model, "object": "model", "created": 0, "owned_by": "openai-excel"}
             for model in excel_upstream.MODEL_IDS
@@ -215,7 +218,9 @@ def create_app(keys: GatewayKeys, *, client_factory=build_upstream_client):
             return sse.openai_error_response(400, "Invalid request body")
         if "stream" in body and not isinstance(body["stream"], bool):
             return sse.openai_error_response(400, "stream must be a boolean")
-        return await bridge.responses(body)
+        result = await bridge.responses(body)
+        result.headers["X-Excel-Bridge-Route"] = route
+        return result
 
     @app.get(SESSION_PATH)
     async def get_session():
@@ -225,6 +230,8 @@ def create_app(keys: GatewayKeys, *, client_factory=build_upstream_client):
     async def set_session(request: Request):
         try:
             body = await read_json(request, MAX_SESSION_BYTES)
+            if route != "excel" and body.get("source") != "codex":
+                return sse.openai_error_response(400, "The Codex route requires a session sent with the current push-session --login codex command.")
             headers = body.get("headers")
             if not isinstance(headers, dict) or any(
                 not isinstance(k, str) or not isinstance(v, str)
@@ -234,6 +241,7 @@ def create_app(keys: GatewayKeys, *, client_factory=build_upstream_client):
                 raise ValueError("Invalid session headers")
             reader.store.configure(headers, tools_version_id=body.get("tools_version_id"),
                                    persist=False, allow_expired=False)
+            reader.source = body.get("source") if body.get("source") in {"codex", "excel"} else "excel"
         except BodyTooLarge:
             return sse.openai_error_response(413, "Session payload is too large")
         except (ValueError, zlib.error, RecursionError):
@@ -245,6 +253,7 @@ def create_app(keys: GatewayKeys, *, client_factory=build_upstream_client):
     @app.delete(SESSION_PATH)
     async def clear_session():
         reader.store.clear()
+        reader.source = None
         bridge.pictures = images.Pictures()
         return session_summary(reader)
 

@@ -1,12 +1,28 @@
-# SUB2API 插件：Excel 独立上游
+# SUB2API 插件：Codex / Excel 独立上游
 
 [English](sub2api.en.md)
 
+## 0.6 的原生渠道
+
+新增原生 WebSocket 上游：设置 `EXCEL_BRIDGE_ROUTE=codex-ws`，会话同步仍使用 `--login codex`。客户端入口保持 HTTP Responses；不会自动回退 HTTP。多通道对照与自有 SUB2API 的研究接入见 [研究指南](channels.md)。
+
+Compose 和 `excel-sub2api serve` 默认 `EXCEL_BRIDGE_ROUTE=codex`。设置 `--route excel`，或在
+Compose 的 `.env` 中设 `EXCEL_BRIDGE_ROUTE=excel`，可继续使用旧 BPS 适配。
+
+原生模式的链路为 `客户端 → SUB2API → sidecar → chatgpt.com/backend-api/codex/responses`。
+使用新版客户端执行 `push-session --login codex`；原生服务拒绝 Excel 来源或未标明来源的旧同步请求。
+服务器仍只接收显式 SSH 同步，不扫描本机凭据，不自行 OAuth 登录或刷新。账号池、鉴权和计费仍由 SUB2API 管理。
+
+原生模式在 SUB2API 中使用 `/v1/models` 返回的原生模型名，**不加 `-excel` 后缀**，开启 OpenAI 透传。
+模型目录从导入会话对应的账号获取，不继承 BPS 的 1M 别名。会话尚未同步时，模型目录会报未登录；
+`/healthz` 仅检查进程存活。原生推理失败不在 sidecar 内重试或回退；SUB2API 自身的重试应另行核算。
+切换渠道后开始新对话。下文的 Excel 协议、生图和重试说明仅适用于显式 `excel` 模式。
+
 这是可选 sidecar，不是 SUB2API 核心补丁，也不是 Microsoft Office 安装插件。
-复用本仓库的 Excel Responses/SSE、工具调用和图片适配；保留原有本机模式。
+复用本仓库的原生 Codex 或旧 Excel 适配；保留原有本机模式。
 
 ```text
-Codex / Responses 客户端 → SUB2API → excel-sub2api:8000 → bps.openai.com
+Codex / Responses 客户端 → SUB2API → excel-sub2api:8000 → 所选 Codex / Excel 上游
                                             ↑
 已登录的电脑（Codex 或 Excel）→ SSH → docker exec → 回环管理端点 → 内存会话
 ```
@@ -16,7 +32,7 @@ Codex / Responses 客户端 → SUB2API → excel-sub2api:8000 → bps.openai.co
 - **只有运行 `push-session` 才会传输会话。** 服务端不扫描 Excel 缓存，不做 OAuth，不处理密码。
 - 与本地模式不同，目标服务器的管理员能够访问会话和请求。只连你自己控制、信任的服务器，
   使用自己的账号并遵守相关服务条款；本工具不会绕过套餐限制，不保证上游长期兼容。
-- 每实例只放一份 Excel 会话，面向自己的 SUB2API 实例。不是多账号池，也不承诺多租户隔离。
+- 每实例只放一份所选渠道的会话，面向自己的 SUB2API 实例。不是多账号池，也不承诺多租户隔离。
 - 会话仅驻留内存；重启后需重新同步。API key、管理 key 是两份不同的独立密钥，
   都不能填成 ChatGPT token。管理 key 不交给 SUB2API。
 - 默认 **不发布宿主机端口**；推理需 API key，管理需真实回环来源 + 管理 key。
@@ -60,7 +76,7 @@ docker exec excel-sub2api excel-sub2api session-status
 | Base URL | `http://excel-sub2api:8000/v1` |
 | API Key | `packaging/sub2api/secrets/api-key` 的内容，安全读取，不是管理 key |
 | OpenAI 透传 | 开启（账号 extra 中的 `openai_passthrough: true`） |
-| 模型 | 从 `/v1/models` 的列表选取，保留 `-excel` 后缀，模型映射保持恒等 |
+| 模型 | 从 `/v1/models` 的列表选取，模型映射保持恒等；仅 Excel 模式使用 `-excel` 后缀 |
 | 分组 / 并发 / 配额 | 沿用你自己的 SUB2API 规则，不改变订阅本身的限制 |
 
 透传用于保留 Responses 工具、reasoning 和输入结构。客户端仍使用 **SUB2API 自己发的 key**，
@@ -71,8 +87,8 @@ docker exec excel-sub2api excel-sub2api session-status
 
 ## 3. 同步会话（Codex 或 Excel 登录）
 
-先在本机准备好一份 ChatGPT 登录，二选一：`codex login`（Codex 自己的登录，无需 Excel），
-或在 Excel 的 ChatGPT 加载项里登录。免安装版/源码启动器也可通过
+默认原生渠道先在本机执行 `codex login`；旧 Excel 渠道也可使用 Excel 的 ChatGPT 加载项登录。
+免安装版/源码启动器也可通过
 `excel-codex.exe sub2api ...` / `excel-codex.cmd sub2api ...` 使用同一套子命令。
 下面为安装 Python 包后的写法：
 
@@ -80,14 +96,14 @@ docker exec excel-sub2api excel-sub2api session-status
 # 先手动 SSH 一次，核验主机指纹、配置密钥登录以及 Docker 权限。
 ssh operator@your-vps
 
-# 在装有 Excel 或已 `codex login` 的电脑上执行，而不是在 VPS 上执行。
-excel-sub2api push-session --ssh operator@your-vps
-# 无 Excel 的机器（比如服务器），显式只用 Codex 的登录：
+# 在已 `codex login` 的电脑上执行，而不是在 VPS 上执行。
 excel-sub2api push-session --ssh operator@your-vps --login codex
 # 如果 Docker 需要非交互 sudo：
-excel-sub2api push-session --ssh operator@your-vps --sudo
+excel-sub2api push-session --ssh operator@your-vps --login codex --sudo
 # 每分钟同步；适合会话刷新，以及服务端重启后的重新导入。Ctrl+C 停止。
-excel-sub2api push-session --ssh operator@your-vps --sudo --watch 60
+excel-sub2api push-session --ssh operator@your-vps --login codex --sudo --watch 60
+# 仅在服务端已选 --route excel 时，发送 Excel 的登录：
+excel-sub2api push-session --ssh operator@your-vps --login excel
 ```
 
 `--login auto`（默认）先试 Codex 的登录、不行再用 Excel 的；`--login codex` / `--login excel` 只用其一，
@@ -97,14 +113,14 @@ excel-sub2api push-session --ssh operator@your-vps --sudo --watch 60
 可用参数：`--ssh-port 2222`、`--identity-file <私钥路径>`、`--container <容器名>`、
 `--webview-dir <Microsoft/Office目录>`、`--login <auto|codex|excel>`。原始 IPv6 目标请在 SSH config
 中定义别名。同步命令不会自动打开 Excel，也不会刷新/延长任何 token；需要时用 `codex login`（Codex 那份）
-或 `excel-codex login` / 手动打开 Excel 加载项重新登录。监视模式会在失败时继续重试，但不会打印请求内容。
+或 `excel-codex login --route excel` / 手动打开 Excel 加载项重新登录。监视模式会在失败时继续重试，但不会打印请求内容。
 
 ## 接口与限制
 
 | 接口 | 凭证 | 作用 |
 | --- | --- | --- |
 | `GET /healthz` | 无 | 仅存活状态，不返回会话/账号 |
-| `GET /v1/models`（或 `/models`） | 上游 API key | Excel 模型列表 |
+| `GET /v1/models`（或 `/models`） | 上游 API key | 所选渠道的模型列表 |
 | `POST /v1/responses`（或 `/responses`） | 上游 API key | 流式/非流式、工具、图片 |
 | `GET/POST/DELETE /admin/session` | 回环 + 管理 key | 状态/导入/清除 |
 
@@ -132,6 +148,7 @@ python -m pytest tests/test_sub2api.py -q
 # 使用一次性独立网络/容器，自动清理；不要传入生产网络。
 docker build -f packaging/sub2api/Dockerfile -t excel-sub2api:test .
 python tests/e2e/sub2api_smoke.py --image excel-sub2api:test
+python tests/e2e/sub2api_smoke.py --image excel-sub2api:test --route excel
 ```
 
 自动测试使用合成会话和 MockTransport，不使用真实 ChatGPT token，不消耗订阅额度。

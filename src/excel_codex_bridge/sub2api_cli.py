@@ -17,6 +17,7 @@ import httpx
 import uvicorn
 
 from .session import LOGINS, LOGIN_ENV, SessionReader
+from . import upstream_routes
 from .sub2api import GatewayKeys, MAX_SESSION_BYTES, SESSION_PATH, create_app, read_secret
 
 
@@ -55,6 +56,7 @@ def _parser():
     serve = sub.add_parser("serve", help="serve on a private network with separate API/admin keys")
     serve.add_argument("--host", default="0.0.0.0")
     serve.add_argument("--port", type=_port, default=8000)
+    serve.add_argument("--route", choices=upstream_routes.CHOICES, default=upstream_routes.default())
     init = sub.add_parser("init-secrets", help="create two random secret files; never overwrite")
     init.add_argument("directory", type=Path)
     push = sub.add_parser("push-session", help="send your local ChatGPT sign-in to your server over SSH")
@@ -130,7 +132,8 @@ def session_payload(reader: SessionReader) -> bytes:
     if reader.last_error or not status.get("configured") or status.get("expired"):
         raise RuntimeError(f"No usable ChatGPT sign-in to send. {reader.hint()}")
     headers = reader.store.request_headers(stream=False)
-    payload = json.dumps({"headers": headers, "tools_version_id": reader.store.tools_version_id()}).encode()
+    payload = json.dumps({"headers": headers, "tools_version_id": reader.store.tools_version_id(),
+                          "source": reader.source}).encode()
     if len(payload) > MAX_SESSION_BYTES:
         raise RuntimeError("Excel session payload is too large")
     return payload
@@ -169,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         if args.command == "serve":
-            app = create_app(GatewayKeys.from_env())
+            app = create_app(GatewayKeys.from_env(), route=args.route)
             uvicorn.run(app, host=args.host, port=args.port, proxy_headers=False,
                         access_log=False, log_level="warning", limit_concurrency=32)
         elif args.command == "init-secrets":

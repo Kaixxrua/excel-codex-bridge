@@ -26,9 +26,11 @@ from test_server import StaticReader
 class H2Server:
     """HTTP/2 without TLS (prior knowledge): answers each request after ``hold`` seconds, counting PINGs."""
 
-    def __init__(self, hold: float) -> None:
+    def __init__(self, hold: float, release: asyncio.Event | None = None) -> None:
         self.hold = hold
         self.pings = 0
+        self.release = release
+        self.requests = asyncio.Queue()
 
     async def __aenter__(self) -> str:
         self._server = await asyncio.start_server(self._serve, "127.0.0.1", 0)
@@ -49,6 +51,7 @@ class H2Server:
                     if isinstance(event, h2.events.PingReceived):
                         self.pings += 1
                     elif isinstance(event, h2.events.RequestReceived):
+                        self.requests.put_nowait(event.stream_id)
                         answers.add(asyncio.create_task(self._answer(connection, writer, event.stream_id)))
                 writer.write(connection.data_to_send())
                 await writer.drain()
@@ -58,7 +61,10 @@ class H2Server:
             writer.close()
 
     async def _answer(self, connection, writer, stream_id: int) -> None:
-        await asyncio.sleep(self.hold)
+        if self.release is not None:
+            await self.release.wait()
+        else:
+            await asyncio.sleep(self.hold)
         connection.send_headers(stream_id, [(":status", "200"), ("content-type", "text/plain")])
         connection.send_data(stream_id, b"done", end_stream=True)
         writer.write(connection.data_to_send())
@@ -89,12 +95,19 @@ class RealConnectionTest(unittest.IsolatedAsyncioTestCase):
                 await pings.aclose()
 
     async def test_finds_the_open_connection_once_for_concurrent_requests(self):
-        async with H2Server(hold=0.5) as url, h2_client() as client:
+        release = asyncio.Event()
+        backend = H2Server(hold=0.0, release=release)
+        async with backend as url, h2_client() as client:
             requests = [asyncio.create_task(client.get(url)) for _ in range(3)]
-            await asyncio.sleep(0.2)
-            self.assertEqual(len(list(busy_http2_connections(client))), 1)
-            self.assertEqual(await UpstreamPings(lambda: client, every=1.0).ping_busy(), 1)
-            for response in await asyncio.gather(*requests):
+            try:
+                for _ in requests:
+                    await asyncio.wait_for(backend.requests.get(), timeout=5.0)
+                self.assertEqual(len(list(busy_http2_connections(client))), 1)
+                self.assertEqual(await UpstreamPings(lambda: client, every=1.0).ping_busy(), 1)
+            finally:
+                release.set()
+                responses = await asyncio.gather(*requests, return_exceptions=True)
+            for response in responses:
                 self.assertEqual(response.text, "done")
             self.assertEqual(list(busy_http2_connections(client)), [])
 

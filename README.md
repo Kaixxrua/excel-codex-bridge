@@ -1,8 +1,75 @@
-# excel-codex-bridge
+# Codex Channels（excel-codex-bridge）
 
 **简体中文** | [English](README.en.md)
 
 > **非官方项目**，与 OpenAI、Microsoft 无任何关联，也未获其认可。使用前请先读[风险与免责声明](#风险与免责声明)。
+
+## 0.6：多通道研究与原生桥接
+
+新增 **Codex HTTP、WebSocket、官方 CLI、SIWC、Responses 兼容服务、BPS** 六种研究适配器。
+通过冻结题目、账号核对、提交前记账、固定评分和配对报告，对比实际可用性；不再以 Excel 为唯一前提。
+Windows 包双击 `codex-channels.cmd` 只查看通道；macOS 使用 `codex-channels.command`，Linux 使用 `codex-channels.sh`。
+完整流程与配置见 [多通道研究指南](docs/channels.md)。
+
+```sh
+excel-codex research prepare --out studies/first --routes codex-http,codex-ws,codex-cli
+excel-codex research inventory --study studies/first
+excel-codex research request-diff --study studies/first
+excel-codex research run --study studies/first
+excel-codex research report --study studies/first
+excel-codex --route codex-ws              # 日常使用原生 WebSocket 上游
+```
+
+研究默认不发请求；只有 `run` 执行冻结预算内的实验。CLI 内部重试、中转背后的账号和 SIWC 工作区身份有各自证据限制，
+报告会标明，不能据此承诺模型能力恢复。已有启动器和包名保留兼容，研究入口与日常桥接分开。
+
+## 原生桥接与兼容模式
+
+默认上游已改为 **Codex HTTP**，使用 `codex login` 保存的本机 ChatGPT 登录。Excel/BPS 保留为
+`--route excel` 兼容模式。服务启动后固定渠道；原生请求失败不会自动改走 BPS、换账号、降低推理强度或
+删掉图片、工具及加密历史重试。模型目录采用所选账号返回的原生目录，包括提示词、工具能力、推理档位和上下文限制。
+
+```text
+Codex CLI / 桌面版 → 本机桥接 → Codex HTTP（默认）
+                            → Codex WebSocket（--route codex-ws）
+                            → Excel/BPS（--route excel）
+```
+
+```sh
+codex login
+excel-codex status                       # 登录与渠道状态，不发推理请求
+excel-codex check-route                  # 最多 2 次推理，检查工具调用及续轮
+excel-codex                             # 默认原生 Codex
+excel-codex desktop                     # 桌面版，关闭窗口后恢复原配置
+excel-codex serve --route codex          # 只运行原生 HTTP 桥接
+excel-codex --route excel               # 显式使用旧 Excel/BPS 适配
+excel-codex login --route excel         # 旧的 Excel 登录面板
+```
+
+`EXCEL_BRIDGE_ROUTE=codex|codex-ws|excel` 可设置默认渠道，命令行 `--route` 优先。原生路径需要 Codex 的
+ChatGPT 登录，不接受 `--login excel`。桥接只读取凭据，不替 Codex 刷新它；到期时重新 `codex login`。
+双击原有启动器也使用新的默认渠道。升级后完全退出并重新打开 Codex，并为新渠道开始新对话；旧 BPS
+会话里的加密历史可能无法跨后端使用，原生路径不会删除这些历史来假装续接成功。
+
+`check-route` 目前验收原生 Codex：先调用一个只返回随机值的本地测试工具，再检查模型能否正确使用工具结果。
+它不会执行 shell、读取项目文件或比较模型智力。每次运行先记账再提交，最多两次；失败即停止。
+结果保存在状态目录的 `route-checks/*.json`，只含账号指纹、实际渠道、请求次数、终态、模型、档位和耗时，
+不保存 token、题目、回复或加密推理。模型目录可读、登录有效和 `/healthz` 正常都不等于推理已通过；
+检查成功也只证明本次工具协议可用。每次重新运行检查会产生新的推理用量。
+这些次数上限仅适用于 `check-route`；正常使用时，Codex 或 SUB2API 自身发起的重试属于新的请求。
+
+原生适配支持原生工具、完整历史、流式与非流式 Responses，以及图片输入。HTTP 模式要求完整 `input`，
+不支持 `previous_response_id`、服务端会话或 `store:true`；独立图片生成接口返回明确的“不支持”。
+不会把旧的 `*-1m-excel` 模型别名或 BPS 的上下文上限套用到原生模型。响应头 `X-Excel-Bridge-Route`
+报告实际渠道；原生日志记录请求 ID、模型和完成/失败状态。单个服务进程内，同一 `prompt_cache_key`
+切换账号会被拒绝；切换账号或渠道后应新开对话。
+
+SUB2API 也可选原生 HTTP 或 WebSocket：见 [部署说明](docs/sub2api.md)。SIWC 等研究通道见 [多通道指南](docs/channels.md)。
+
+## Excel/BPS 兼容模式
+
+**下文的 Excel 登录回退、工具转换、生图、长上下文和重试说明仅适用于 `--route excel`。**
+原有命令示例使用这一模式时，请增加 `--route excel`，或先设置 `EXCEL_BRIDGE_ROUTE=excel`。
 
 > **新增可选：SUB2API 插件。** 将 Excel 会话作为独立上游接入你自己的 SUB2API，
 > 无需修改 SUB2API 源码，见 [Docker 部署与 SSH 会话同步](docs/sub2api.md)。

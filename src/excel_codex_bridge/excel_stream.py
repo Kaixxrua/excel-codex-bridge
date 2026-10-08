@@ -109,7 +109,7 @@ def _detail(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
 
 
-async def kept_alive(chunks, opening: dict, every: float | None = None):
+async def kept_alive(chunks, opening: dict, every: float | None = None, *, backend: str = "Excel backend"):
     """The SSE bytes of ``chunks`` event by event, with something for the client at least every ``every`` seconds.
 
     Codex drops a stream it hears nothing from for five minutes and sends the
@@ -164,7 +164,7 @@ async def kept_alive(chunks, opening: dict, every: float | None = None):
         elif kind == "error" and payload is not None:
             reported = reported_error(payload) or reported
             if reported is not None:
-                log.warning("the Excel backend reported an error: %s: %s", reported["code"], reported["message"][:500])
+                log.warning("%s reported an error: %s", backend, reported["code"])
         return True
 
     cut_off: Exception | None = None
@@ -208,14 +208,14 @@ async def kept_alive(chunks, opening: dict, every: float | None = None):
             error = reported
         elif broke:
             error = {"code": UPSTREAM_ERROR_CODE, "message": (
-                f"The Excel backend closed the connection {_spent(spent)} into the answer, "
+                f"The {backend} closed the connection {_spent(spent)} into the answer, "
                 f"before finishing it ({_detail(cut_off)}).")}
         elif cut_off is not None:
             error = {"code": UPSTREAM_ERROR_CODE,
                      "message": f"The bridge failed while passing on the answer ({_detail(cut_off)})."}
         else:
             error = {"code": UPSTREAM_ERROR_CODE,
-                     "message": f"The Excel backend ended the answer {_spent(spent)} in, before finishing it."}
+                     "message": f"The {backend} ended the answer {_spent(spent)} in, before finishing it."}
         log.warning(
             "the answer stopped after %.1f s and %d events (the last %s) before it was finished%s; "
             "Codex is told it failed",
@@ -223,7 +223,7 @@ async def kept_alive(chunks, opening: dict, every: float | None = None):
         )
         yield failed_event(told, error)
     elif broke:
-        log.debug("the Excel backend closed the connection after the last event (%s)", _detail(cut_off))
+        log.debug("%s closed the connection after the last event (%s)", backend, _detail(cut_off))
     if cut_off is not None and not broke:
         raise cut_off
 

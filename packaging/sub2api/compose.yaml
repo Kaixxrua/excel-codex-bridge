@@ -17,6 +17,7 @@ services:
       EXCEL_SUB2API_API_KEY_FILE: /run/secrets/api-key
       EXCEL_SUB2API_ADMIN_KEY_FILE: /run/secrets/admin-key
       EXCEL_BRIDGE_PROXY: ${EXCEL_BRIDGE_PROXY:-}
+      EXCEL_BRIDGE_ROUTE: ${EXCEL_BRIDGE_ROUTE:-codex}
     secrets:
       - source: api-key
         target: api-key

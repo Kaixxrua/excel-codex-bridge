@@ -163,7 +163,8 @@ def _into_features_table(body: str, index: int, nl: str) -> str:
 
 
 def enable(
-    text: str, *, port: int, catalog: Path, model: str, shared: bool = False, quiet_features: bool = False
+    text: str, *, port: int, catalog: Path, model: str, shared: bool = False, quiet_features: bool = False,
+    excel: bool = True
 ) -> str:
     """``text`` with the bridge made the default provider for every Codex client.
 
@@ -197,7 +198,7 @@ def enable(
         f"name = {toml(codex_config.PROVIDER_NAME)}",
         f"base_url = {toml(codex_config.base_url(port))}",
         'wire_api = "responses"',
-        f"http_headers = {codex_config.http_headers()}",
+        f"http_headers = {codex_config.http_headers() if excel else '{}'}",
         BOTTOM_END,
     ]
     return nl.join(top) + nl + nl + body + (nl if no_eol else "") + nl + nl.join(bottom) + nl
@@ -265,8 +266,8 @@ def features_quiet(text: str) -> bool:
 
 
 def _checked(path: Path, text: str, *, port: int, catalog: Path, model: str, shared: bool,
-             quiet_features: bool) -> str:
-    new = enable(text, port=port, catalog=catalog, model=model, shared=shared, quiet_features=quiet_features)
+             quiet_features: bool, excel: bool = True) -> str:
+    new = enable(text, port=port, catalog=catalog, model=model, shared=shared, quiet_features=quiet_features, excel=excel)
     original = strip_managed(text)
     if strip_managed(new) != original:
         raise ConfigError(f"{path} has a layout this tool cannot undo exactly; edit it by hand instead")
@@ -287,7 +288,8 @@ def _checked(path: Path, text: str, *, port: int, catalog: Path, model: str, sha
 
 
 def enable_file(
-    path: Path, *, port: int, catalog: Path, model: str, shared: bool = False, quiet_features: bool = False
+    path: Path, *, port: int, catalog: Path, model: str, shared: bool = False, quiet_features: bool = False,
+    excel: bool = True
 ) -> Path | None:
     """Enable in ``path``; returns the backup made of the original, if any.
 
@@ -295,7 +297,7 @@ def enable_file(
     written without it; ``features_quiet`` tells which way it went.
     """
     text, bom = _read(path)
-    settings = dict(port=port, catalog=catalog, model=model, shared=shared)
+    settings = dict(port=port, catalog=catalog, model=model, shared=shared, excel=excel)
     try:
         new = _checked(path, text, **settings, quiet_features=quiet_features)
     except ConfigError:
@@ -362,10 +364,11 @@ def _without_login(url: str) -> str:
 def _bridge_catalog(value: str) -> bool:
     """Whether ``value`` is the model list the bridge writes (``codex_config.write_catalog``)."""
     parts = [part for part in re.split(r"[\\/]+", value.strip()) if part]
-    if len(parts) >= 2 and parts[-1] == codex_config.CATALOG_NAME and parts[-2].lower() in _BRIDGE_DIRS:
+    names = (codex_config.CATALOG_NAME, "codex-native-model-catalog.json")
+    if len(parts) >= 2 and parts[-1] in names and parts[-2].lower() in _BRIDGE_DIRS:
         return True
-    own = codex_config.state_dir() / codex_config.CATALOG_NAME
-    return os.path.normcase(os.path.abspath(os.path.expanduser(value))) == os.path.normcase(os.path.abspath(own))
+    actual = os.path.normcase(os.path.abspath(os.path.expanduser(value)))
+    return any(actual == os.path.normcase(os.path.abspath(codex_config.state_dir() / name)) for name in names)
 
 
 def _leftovers(text: str) -> tuple[list[int], set[int], list[str]]:
