@@ -270,7 +270,13 @@ jobs:
         with:
           node-version: 22
       - run: npm install -g @openai/codex@${{ env.CODEX_VERSION }}
-      - run: python -m pip install -r requirements.txt pyinstaller
+      - name: Install macOS build dependencies
+        # Intel builds cryptography from source. Static OpenSSL avoids a dylib
+        # name collision with Python's older libssl when PyInstaller bundles it.
+        # https://cryptography.io/en/latest/installation/#building-cryptography-on-macos
+        env:
+          OPENSSL_STATIC: "1"
+        run: python -m pip install --no-cache-dir -r requirements.txt pyinstaller
 
       - name: Build excel-codex
         run: >-
