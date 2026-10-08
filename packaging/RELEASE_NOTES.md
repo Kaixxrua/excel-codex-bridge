@@ -1,25 +1,24 @@
-原生 Codex 渠道与协议验收 · Native Codex route and acceptance checks
+Codex Channels 0.6.0 · 多通道研究与原生桥接
 
-## 0.6.0
+项目从单一 Excel/BPS 适配扩展为明确选择通道、冻结实验、记录真实终态的研究工具。旧仓库名、包名和启动器保留兼容。
 
-- 默认使用 Codex HTTP 和本机 `codex login` 凭据；旧 BPS 适配通过 `--route excel` 显式保留。
-- 原生工具、提示词、图片输入、推理参数和加密历史直接转发。原生请求失败不重试、不自动换渠道或删历史。
-- 启动时读取当前账号的原生模型目录，使用其上下文限制和工具能力。旧的 Excel 长上下文别名不用于原生路线。
-- 新增 `check-route`：最多两次真实推理，验收工具调用和续轮；提交前记账，失败即停止，保存不含凭据和任务正文的记录。
-- 本地服务及 SUB2API sidecar 都支持固定选择渠道，响应头标记实际路线。SUB2API 原生模式需使用新版 `push-session --login codex`。
-- 原生 HTTP 适配暂不提供独立生图、服务端会话、SIWC 或 WebSocket；没有能力恢复或质量优势承诺。
+- 六种研究适配：Codex HTTP、Codex WebSocket、官方 Codex CLI、独立授权的 SIWC、显式配置的 Responses 兼容服务、严格文本 BPS。
+- 完整流程：prepare → request-diff / inventory → run → report，支持 smoke / screen / confirm 与跨时间复验。
+- 题目、顺序、模型、档位、凭据引用和预算冻结；提交前持久记账。中断保留次数，续跑不重放，协议失败停止该通道，账号变化拒绝混入旧研究。
+- 固定答案、只读 SQL 与合成工具评分；报告区分协议可用率、答题得分、配对结果和身份缺口。原始回答、加密推理和凭据不进入报告。
+- 日常桥接默认原生 HTTP；新增 --route codex-ws。CLI、桌面模式与 SUB2API sidecar 都能明确选择 WS，上游失败不自动切回 HTTP。
+- 新增 codex-channels 启动入口和 Linux x64 可执行包，提供 Windows x64、macOS arm64/x64、Linux x64 包及 SHA-256。
 
-升级后完全退出并重启 Codex，为新渠道开始新对话。旧 BPS 加密历史可能无法跨后端续接。
-需要旧行为时，设置 `EXCEL_BRIDGE_ROUTE=excel` 或传入 `--route excel`。
+真实验收中，原生 HTTP/WS 的同题文本与工具续轮均通过，得分持平；官方 CLI 文本基线通过。较早一轮 WS 返回错误，失败记录保留。BPS 返回 403；SIWC 缺少本机 direct 授权，未进行真实推理。Responses 兼容服务使用本地合成上游做端到端验证。这些结果不证明一般质量提升或能力恢复。
+
+迁移：升级后退出并重开 Codex，为不同通道新开对话。旧 Excel/BPS 行为用 --route excel 或 EXCEL_BRIDGE_ROUTE=excel。研究入口默认只查看通道，只有显式 run 才消费推理额度；CLI/中转的内部重试不属于可核验的客户端提交上限。
+
+详见包内 docs/channels.md。SIWC 必须通过独立浏览器授权取得 direct 权限，不接受普通 Codex token 代替。研究不会自动改动生产路由、远端账号池或账单。
 
 ## English
 
-- Native Codex HTTP is now the default, using the local ChatGPT login maintained by Codex. Select `--route excel` for legacy BPS behavior.
-- Native tools, instructions, image inputs, reasoning parameters and encrypted history pass through. Native inference is never retried, redirected to another channel or repaired by deleting history.
-- Model menus use the selected account's native catalog and context limits. Excel long-context aliases are rejected in native mode.
-- `check-route` verifies a tool call and its continuation with at most two inference submissions, reserved before dispatch. Receipts exclude credentials, prompts, answers and encrypted reasoning.
-- Local and SUB2API servers select one explicit route. Native sidecar imports require the current `push-session --login codex` command.
-- Standalone image generation, server-side conversation state, SIWC and WebSocket are not included in the native HTTP adapter. No quality-advantage claim is made.
+Codex Channels adds six explicit research adapters, frozen synthetic fixtures, durable submission budgets, account binding, resumable runs and paired reports. Native HTTP remains the default production bridge; select --route codex-ws for a WebSocket upstream or --route excel for legacy BPS. Existing package names remain compatible.
 
-Fully quit and reopen Codex after upgrading, then start a new conversation for the new route.
-For the previous behavior, set `EXCEL_BRIDGE_ROUTE=excel` or pass `--route excel`.
+Native HTTP/WS text and tool-continuation trials passed with tied fixture scores; the official CLI text baseline passed. An earlier WS failure remains recorded. BPS returned 403, SIWC was not live-tested without its separate direct grant, and the compatible Responses adapter passed against a local synthetic service. Protocol availability is not a general model-quality claim.
+
+Packages cover Windows x64, macOS arm64/x64 and Linux x64, with SHA-256 files. Start a new conversation when switching channels. See docs/channels.md for credential handling, supported capabilities and accounting limits.

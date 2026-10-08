@@ -4,6 +4,8 @@
 
 ## Native route in 0.6
 
+Select `EXCEL_BRIDGE_ROUTE=codex-ws` for a native WebSocket upstream, using `push-session --login codex`. Client ingress remains HTTP Responses; no silent HTTP fallback. See the [research guide](channels.md) to compare channels or include your own SUB2API endpoint.
+
 Compose and `excel-sub2api serve` now default to `EXCEL_BRIDGE_ROUTE=codex`. Select `--route excel`
 or set `EXCEL_BRIDGE_ROUTE=excel` in Compose's `.env` for legacy BPS mode.
 

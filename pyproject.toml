@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "excel-codex-bridge"
 dynamic = ["version"]
-description = "Run Codex through an explicit native or legacy Excel route on your own ChatGPT login."
+description = "Bounded multi-channel Codex research and explicit native or legacy Excel bridging."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Unlicense" }
@@ -15,6 +15,9 @@ dependencies = [
     "httpx[socks,http2]>=0.27,<0.29",
     "zstandard>=0.22",
     "tzdata>=2024.1",
+    "websockets>=15,<16",
+    "python-socks[asyncio]>=2.7,<3",
+    "PyJWT[crypto]>=2.10,<3",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +26,7 @@ test = ["pytest>=8"]
 [project.scripts]
 excel-codex-bridge = "excel_codex_bridge.cli:main"
 excel-sub2api = "excel_codex_bridge.sub2api_cli:main"
+codex-channels = "excel_codex_bridge.research.cli:main"
 
 [tool.setuptools.dynamic]
 version = { attr = "excel_codex_bridge.__version__" }

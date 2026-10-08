@@ -25,9 +25,13 @@ def save(path: Path, report: dict) -> None:
             os.unlink(temporary)
 
 
-async def run(reader, client_factory, *, model: str, effort: str, receipt: Path, timeout: float = 90) -> dict:
-    bridge = NativeBridge(reader, client_factory)
-    report = {"route": "codex", "endpoint": BASE_URL + "/responses", "model": model, "effort": effort,
+async def run(reader, client_factory, *, model: str, effort: str, receipt: Path, timeout: float = 90, route: str = "codex") -> dict:
+    from .upstream_routes import NATIVE, create_bridge
+    if route not in NATIVE:
+        raise ValueError("Select a native route")
+    bridge = create_bridge(reader, client_factory, route)
+    endpoint = BASE_URL + "/responses" if route == "codex" else "wss://chatgpt.com/backend-api/codex/responses"
+    report = {"route": route, "endpoint": endpoint, "model": model, "effort": effort,
               "checked_at": time.time(), "max_calls": 2, "calls": [], "status": "not_started",
               "protocol_verified": False, "quality_advantage_proven": False}
     value = secrets.token_hex(8)

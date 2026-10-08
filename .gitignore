@@ -8,3 +8,5 @@ dist/
 *.spec
 packaging/sub2api/secrets/
 packaging/sub2api/.env
+studies/
+research-runtime/

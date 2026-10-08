@@ -1,11 +1,30 @@
-# excel-codex-bridge
+# Codex Channels (excel-codex-bridge)
 
 [简体中文](README.md) | **English**
 
 > **Unofficial.** Not affiliated with, endorsed by, or supported by OpenAI or Microsoft.
 > Read [Risks and disclaimer](#risks-and-disclaimer) before using it.
 
-## 0.6: native Codex by default, explicit upstream routes
+## 0.6: multi-channel studies and native bridging
+
+Compare Codex HTTP, WebSocket, the official CLI, separately authorized SIWC, a configured Responses-compatible service, and strict text-only BPS.
+Studies freeze synthetic tasks, account references, call caps and execution order; persist reservations before dispatch; and produce deterministic scores and paired reports.
+Use `codex-channels.cmd` on Windows, `codex-channels.command` on macOS, or `codex-channels.sh` on Linux. Opening the research entrypoint only lists routes.
+See the [multi-channel guide](docs/channels.md) for complete configuration, limitations and credential handling.
+
+```sh
+excel-codex research prepare --out studies/first --routes codex-http,codex-ws,codex-cli
+excel-codex research inventory --study studies/first
+excel-codex research request-diff --study studies/first
+excel-codex research run --study studies/first
+excel-codex research report --study studies/first
+excel-codex --route codex-ws
+```
+
+Only `run` consumes inference within the frozen submission budget. CLI/gateway internal retries and upstream identity have explicit evidence limits.
+Existing package names and launchers remain compatible. Research does not automatically change the production route or claim restored model quality.
+
+## Native bridge and compatibility mode
 
 The default is now **Codex HTTP**, using the local ChatGPT sign-in saved by `codex login`.
 The Excel/BPS adapter remains available with `--route excel`. Each process keeps its selected route.
@@ -24,7 +43,7 @@ excel-codex --route excel          # legacy BPS mode
 excel-codex login --route excel    # legacy Excel sign-in pane
 ```
 
-`EXCEL_BRIDGE_ROUTE=codex|excel` sets the default; `--route` takes precedence. Native mode requires
+`EXCEL_BRIDGE_ROUTE=codex|codex-ws|excel` sets the default; `--route` takes precedence. Native mode requires
 Codex's ChatGPT login and rejects `--login excel`. The bridge reads credentials without refreshing them;
 run `codex login` again when needed. Existing double-click launchers use the new default. After upgrading,
 fully quit and reopen Codex and start a new conversation for the new route. Encrypted history from BPS
@@ -47,7 +66,7 @@ long-context aliases and limits are not applied to native models. `X-Excel-Bridg
 actual transport. Logs contain native request IDs, model and terminal status. Within a running process,
 reusing a `prompt_cache_key` after changing accounts is rejected; start a new conversation after changing
 accounts or routes. See [SUB2API deployment](docs/sub2api.en.md) for native sidecar mode.
-SIWC and WebSocket adapters are not included in this version; no capability-restoration claim is made.
+Native WebSocket is available with `--route codex-ws`. SIWC and other research adapters use the separate research entrypoint; no capability-restoration claim is made.
 
 ## Legacy Excel/BPS mode
 

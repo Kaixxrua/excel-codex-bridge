@@ -1,10 +1,29 @@
-# excel-codex-bridge
+# Codex Channels（excel-codex-bridge）
 
 **简体中文** | [English](README.en.md)
 
 > **非官方项目**，与 OpenAI、Microsoft 无任何关联，也未获其认可。使用前请先读[风险与免责声明](#风险与免责声明)。
 
-## 0.6：默认原生 Codex，显式选择渠道
+## 0.6：多通道研究与原生桥接
+
+新增 **Codex HTTP、WebSocket、官方 CLI、SIWC、Responses 兼容服务、BPS** 六种研究适配器。
+通过冻结题目、账号核对、提交前记账、固定评分和配对报告，对比实际可用性；不再以 Excel 为唯一前提。
+Windows 包双击 `codex-channels.cmd` 只查看通道；macOS 使用 `codex-channels.command`，Linux 使用 `codex-channels.sh`。
+完整流程与配置见 [多通道研究指南](docs/channels.md)。
+
+```sh
+excel-codex research prepare --out studies/first --routes codex-http,codex-ws,codex-cli
+excel-codex research inventory --study studies/first
+excel-codex research request-diff --study studies/first
+excel-codex research run --study studies/first
+excel-codex research report --study studies/first
+excel-codex --route codex-ws              # 日常使用原生 WebSocket 上游
+```
+
+研究默认不发请求；只有 `run` 执行冻结预算内的实验。CLI 内部重试、中转背后的账号和 SIWC 工作区身份有各自证据限制，
+报告会标明，不能据此承诺模型能力恢复。已有启动器和包名保留兼容，研究入口与日常桥接分开。
+
+## 原生桥接与兼容模式
 
 默认上游已改为 **Codex HTTP**，使用 `codex login` 保存的本机 ChatGPT 登录。Excel/BPS 保留为
 `--route excel` 兼容模式。服务启动后固定渠道；原生请求失败不会自动改走 BPS、换账号、降低推理强度或
@@ -12,7 +31,8 @@
 
 ```text
 Codex CLI / 桌面版 → 本机桥接 → Codex HTTP（默认）
-                            → Excel/BPS（显式 --route excel）
+                            → Codex WebSocket（--route codex-ws）
+                            → Excel/BPS（--route excel）
 ```
 
 ```sh
@@ -26,7 +46,7 @@ excel-codex --route excel               # 显式使用旧 Excel/BPS 适配
 excel-codex login --route excel         # 旧的 Excel 登录面板
 ```
 
-`EXCEL_BRIDGE_ROUTE=codex|excel` 可设置默认渠道，命令行 `--route` 优先。原生路径需要 Codex 的
+`EXCEL_BRIDGE_ROUTE=codex|codex-ws|excel` 可设置默认渠道，命令行 `--route` 优先。原生路径需要 Codex 的
 ChatGPT 登录，不接受 `--login excel`。桥接只读取凭据，不替 Codex 刷新它；到期时重新 `codex login`。
 双击原有启动器也使用新的默认渠道。升级后完全退出并重新打开 Codex，并为新渠道开始新对话；旧 BPS
 会话里的加密历史可能无法跨后端使用，原生路径不会删除这些历史来假装续接成功。
@@ -44,8 +64,7 @@ ChatGPT 登录，不接受 `--login excel`。桥接只读取凭据，不替 Code
 报告实际渠道；原生日志记录请求 ID、模型和完成/失败状态。单个服务进程内，同一 `prompt_cache_key`
 切换账号会被拒绝；切换账号或渠道后应新开对话。
 
-SUB2API 也可选原生渠道：见 [部署说明](docs/sub2api.md)。SIWC 和 WebSocket 尚未接入本版本，
-没有“满血恢复”或自动找到更强渠道的承诺。
+SUB2API 也可选原生 HTTP 或 WebSocket：见 [部署说明](docs/sub2api.md)。SIWC 等研究通道见 [多通道指南](docs/channels.md)。
 
 ## Excel/BPS 兼容模式
 

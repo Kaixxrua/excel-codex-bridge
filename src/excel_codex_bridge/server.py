@@ -967,7 +967,7 @@ class Bridge:
 def create_app(reader: SessionReader | None = None, *, client_factory=build_upstream_client, route="excel"):
     """Build the ASGI app (wrapped in the loopback guard)."""
     from .upstream_routes import create_bridge
-    bridge = create_bridge(reader or SessionReader(login="codex" if route == "codex" else None), client_factory, route)
+    bridge = create_bridge(reader or SessionReader(login="codex" if route != "excel" else None), client_factory, route)
 
     @contextlib.asynccontextmanager
     async def lifespan(_app):
@@ -990,7 +990,7 @@ def create_app(reader: SessionReader | None = None, *, client_factory=build_upst
     @app.get("/v1/models")
     @app.get("/models")
     async def models():
-        if route == "codex":
+        if route != "excel":
             return await bridge.models()
         return {
             "object": "list",

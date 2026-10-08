@@ -66,7 +66,7 @@ def _describe_session(status: dict) -> tuple[bool, str]:
 def _reader(args, *, login: str | None = None) -> SessionReader:
     webview_dir = getattr(args, "webview_dir", None)
     requested_login = login or getattr(args, "login", None)
-    if upstream_routes.selected(args) == "codex" and login is None:
+    if upstream_routes.selected(args) in upstream_routes.NATIVE and login is None:
         if requested_login == "excel":
             raise ValueError("--route codex uses --login codex; select --route excel for an Excel session.")
         requested_login = "codex"
@@ -112,7 +112,7 @@ def _route_catalog(args, reader: SessionReader, directory: Path | None = None) -
 
 def _route_notice(args) -> None:
     route = upstream_routes.selected(args)
-    endpoint = "chatgpt.com/backend-api/codex" if route == "codex" else "bps.openai.com"
+    endpoint = "chatgpt.com/backend-api/codex" if route in upstream_routes.NATIVE else "bps.openai.com"
     _print(f"Upstream route: {route} ({endpoint}); fixed for this process.")
 
 
@@ -131,7 +131,7 @@ def _image_model(value: str) -> str:
 
 
 def _pictures_line(args=None) -> str:
-    if args is not None and upstream_routes.selected(args) == "codex":
+    if args is not None and upstream_routes.selected(args) in upstream_routes.NATIVE:
         return "Native Codex tools and image inputs are forwarded unchanged. Standalone image generation is unavailable on this HTTP adapter."
     try:
         drawing = f"draws with {image_generation.model()} (--image-model picks another)."
@@ -201,7 +201,7 @@ def cmd_update(args) -> int:
 # ─── automatic sign-in through Excel ──────────────────────────────────────────
 
 def _signin(reader: SessionReader, args) -> excel_signin.ExcelSignIn:
-    disabled = upstream_routes.selected(args) == "codex" or getattr(args, "no_auto_signin", False)
+    disabled = upstream_routes.selected(args) in upstream_routes.NATIVE or getattr(args, "no_auto_signin", False)
     return excel_signin.ExcelSignIn(reader, enabled=False if disabled else None)
 
 
@@ -278,7 +278,7 @@ def cmd_serve(args) -> int:
     reader = _reader(args)
     if not args.log_file:
         # A config from `print-config` points at this file; keep its model list this release's.
-        if upstream_routes.selected(args) == "codex":
+        if upstream_routes.selected(args) in upstream_routes.NATIVE:
             _route_catalog(args, reader)
         else:
             _refresh_catalog()
@@ -358,13 +358,13 @@ def cmd_status(args) -> int:
     _route_notice(args)
     ok, message = _describe_session(_reader(args).refresh(force=True))
     _print(message)
-    if upstream_routes.selected(args) == "codex":
+    if upstream_routes.selected(args) in upstream_routes.NATIVE:
         _print("Login status is not an inference check. Run `excel-codex check-route` to verify a tool call and its continuation (at most 2 requests).")
     return 0 if ok else 1
 
 
 def cmd_check_route(args) -> int:
-    if upstream_routes.selected(args) != "codex":
+    if upstream_routes.selected(args) not in upstream_routes.NATIVE:
         raise ValueError("This check validates native Codex. Use --route codex; legacy Excel retries are not a controlled channel comparison.")
     from . import route_check
     from .server import build_upstream_client
@@ -374,13 +374,13 @@ def cmd_check_route(args) -> int:
     receipt = codex_config.state_dir() / "route-checks" / (uuid.uuid4().hex + ".json")
     _print(f"Checking native tool calling and continuation: at most 2 inference requests. Receipt: {receipt}")
     report = asyncio.run(route_check.run(_reader(args), build_upstream_client, model=args.model,
-                                        effort=args.effort, receipt=receipt))
+                                        effort=args.effort, receipt=receipt, route=upstream_routes.selected(args)))
     _print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report["protocol_verified"] else 1
 
 
 def cmd_login(args) -> int:
-    if upstream_routes.selected(args) == "codex":
+    if upstream_routes.selected(args) in upstream_routes.NATIVE:
         codex = _find_codex(None)
         if codex is None:
             _print("Codex CLI was not found. Install Codex, then run codex login.")
@@ -1192,7 +1192,7 @@ def cmd_threads(args) -> int:
 def _parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--route", choices=upstream_routes.CHOICES, default=upstream_routes.default(),
-                        help="upstream: codex (default, native HTTP) or excel (legacy BPS); never silently switches routes")
+                        help="upstream: codex (HTTP), codex-ws (WebSocket), or excel (legacy BPS); fixed per process")
     common.add_argument(
         "--proxy",
         help="upstream proxy, e.g. http://127.0.0.1:7890 "
@@ -1236,6 +1236,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command")
+    sub.add_parser("research", help="frozen multi-channel studies; use research --help")
+    sub.add_parser("channels", help="alias for research; channels routes lists all adapters")
 
     codex = sub.add_parser(
         "codex",
@@ -1363,6 +1365,9 @@ def _entry(argv: list[str] | None = None) -> int:
 
 def _main(argv: list[str]) -> int:
     argv = list(argv)
+    if argv and argv[0] in {"research", "channels"}:
+        from .research.cli import main as research_main
+        return research_main(argv[1:])
     if argv and argv[0] == "sub2api":
         from .sub2api_cli import main as sub2api_main
         return sub2api_main(argv[1:])

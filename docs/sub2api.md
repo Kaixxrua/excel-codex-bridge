@@ -4,6 +4,8 @@
 
 ## 0.6 的原生渠道
 
+新增原生 WebSocket 上游：设置 `EXCEL_BRIDGE_ROUTE=codex-ws`，会话同步仍使用 `--login codex`。客户端入口保持 HTTP Responses；不会自动回退 HTTP。多通道对照与自有 SUB2API 的研究接入见 [研究指南](channels.md)。
+
 Compose 和 `excel-sub2api serve` 默认 `EXCEL_BRIDGE_ROUTE=codex`。设置 `--route excel`，或在
 Compose 的 `.env` 中设 `EXCEL_BRIDGE_ROUTE=excel`，可继续使用旧 BPS 适配。
 

@@ -200,7 +200,7 @@ def create_app(keys: GatewayKeys, *, client_factory=build_upstream_client, route
     @app.get("/v1/models")
     @app.get("/models")
     async def models():
-        if route == "codex":
+        if route != "excel":
             return await bridge.models()
         return {"object": "list", "data": [
             {"id": model, "object": "model", "created": 0, "owned_by": "openai-excel"}
@@ -230,7 +230,7 @@ def create_app(keys: GatewayKeys, *, client_factory=build_upstream_client, route
     async def set_session(request: Request):
         try:
             body = await read_json(request, MAX_SESSION_BYTES)
-            if route == "codex" and body.get("source") != "codex":
+            if route != "excel" and body.get("source") != "codex":
                 return sse.openai_error_response(400, "The Codex route requires a session sent with the current push-session --login codex command.")
             headers = body.get("headers")
             if not isinstance(headers, dict) or any(

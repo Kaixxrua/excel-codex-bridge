@@ -59,6 +59,7 @@ def prepare(body: dict) -> dict:
 
 
 class NativeBridge:
+    route = ROUTE
     def __init__(self, reader, client_factory):
         self.reader, self.client_factory = reader, client_factory
         self._client = None
@@ -91,13 +92,11 @@ class NativeBridge:
                 "User-Agent": f"excel-codex-bridge/{__version__}",
                 "OpenAI-Beta": "responses=experimental"}
 
-    @staticmethod
-    def error(exc: RouteError) -> Response:
+    def error(self, exc: RouteError) -> Response:
         return sse.openai_error_response(exc.status, str(exc), code=exc.code,
-                                        headers={"X-Excel-Bridge-Route": ROUTE})
+                                        headers={"X-Excel-Bridge-Route": self.route})
 
-    @staticmethod
-    async def rejected(upstream: httpx.Response) -> Response:
+    async def rejected(self, upstream: httpx.Response) -> Response:
         await upstream.aread()
         status = upstream.status_code
         try:
@@ -107,7 +106,7 @@ class NativeBridge:
         except ValueError:
             payload = {"error": {"type": "upstream_error", "code": "codex_http_error",
                                  "message": f"Codex returned HTTP {status}; this request was not retried or sent to another route."}}
-        headers = {"X-Excel-Bridge-Route": ROUTE}
+        headers = {"X-Excel-Bridge-Route": self.route}
         if upstream.headers.get("retry-after"):
             headers["Retry-After"] = upstream.headers["retry-after"]
         # Never turn a redirect into a credential-forwarding follow-up request.
@@ -153,6 +152,10 @@ class NativeBridge:
     async def images(self, operation, body):
         return self.error(RouteError("Standalone image generation is unavailable on this Codex HTTP adapter. Image inputs are forwarded unchanged.", 501, "unsupported_route_capability"))
 
+    async def send(self, payload, headers):
+        request = self.client.build_request("POST", BASE_URL + "/responses", headers=headers, json=payload)
+        return await self.client.send(request, stream=True, follow_redirects=False)
+
     async def responses(self, body: dict) -> Response:
         try:
             payload, headers = prepare(body), self.headers()
@@ -169,24 +172,23 @@ class NativeBridge:
         except RouteError as exc:
             return self.error(exc)
         request_id, started = uuid.uuid4().hex, time.monotonic()
-        log.info("route=codex request=%s model=%s status=submitted", request_id, payload["model"])
+        log.info("route=%s request=%s model=%s status=submitted", self.route, request_id, payload["model"])
         try:
-            request = self.client.build_request("POST", BASE_URL + "/responses", headers=headers, json=payload)
-            upstream = await self.client.send(request, stream=True, follow_redirects=False)
+            upstream = await self.send(payload, headers)
         except httpx.RequestError as exc:
             status, message = sse.upstream_request_error_status_and_message(exc)
-            log.warning("route=codex request=%s status=connection_failed", request_id)
+            log.warning("route=%s request=%s status=connection_failed", self.route, request_id)
             return self.error(RouteError(message + "; no retry or route fallback was attempted.", status))
         if upstream.status_code != 200:
             try:
-                log.warning("route=codex request=%s http=%s", request_id, upstream.status_code)
+                log.warning("route=%s request=%s http=%s", self.route, request_id, upstream.status_code)
                 return await self.rejected(upstream)
             finally:
                 await upstream.aclose()
 
         opening = {"id": "resp_" + request_id, "object": "response", "created_at": int(time.time()),
                    "status": "in_progress", "model": payload["model"], "output": []}
-        response_headers = {"X-Excel-Bridge-Route": ROUTE, "X-Excel-Bridge-Request-Id": request_id,
+        response_headers = {"X-Excel-Bridge-Route": self.route, "X-Excel-Bridge-Request-Id": request_id,
                             "Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
         async def relay():
@@ -221,7 +223,7 @@ class NativeBridge:
             finally:
                 await chunks.aclose()
                 await upstream.aclose()
-                log.info("route=codex request=%s status=%s seconds=%.3f", request_id, terminal, time.monotonic() - started)
+                log.info("route=%s request=%s status=%s seconds=%.3f", self.route, request_id, terminal, time.monotonic() - started)
 
         if body.get("stream"):
             return StreamingResponse(relay(), media_type="text/event-stream", headers=response_headers)

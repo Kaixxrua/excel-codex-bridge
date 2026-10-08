@@ -45,7 +45,7 @@ def wait(container):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", required=True)
-    parser.add_argument("--route", choices=("codex", "excel"), default="codex")
+    parser.add_argument("--route", choices=("codex", "codex-ws", "excel"), default="codex")
     args = parser.parse_args()
     name = "excel-sub2api-smoke-" + uuid.uuid4().hex[:12]
     env = {**os.environ, "SUB2API_NETWORK": name, "EXCEL_BRIDGE_PROXY": "", "EXCEL_BRIDGE_ROUTE": args.route}
@@ -85,7 +85,7 @@ with httpx.Client(base_url="http://excel-sub2api:8000", trust_env=False, timeout
     assert c.get("/healthz").json() == {{"ok": True}}
     assert c.get("/v1/models").status_code == 401
     listed = c.get("/v1/models", headers=api)
-    if {args.route!r} == "codex":
+    if {args.route!r} != "excel":
         assert listed.status_code == 401  # No session: do not contact OpenAI.
         model = "gpt-5.6-sol"
     else:
